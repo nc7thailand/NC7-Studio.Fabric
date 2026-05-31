@@ -29,7 +29,7 @@ export function mountCanvasViewport(
     addRectangle: () => {
       fabric.addRectangle();
     },
-    getObjectCount: () => fabric.canvas.getObjects().length,
+    getObjectCount: () => fabric.getUserObjectCount(),
     getActiveObjectName: () => fabric.getActiveObjectName(),
     resetView: () => fabric.resetView(),
     onSelectionChange: (cb) => {

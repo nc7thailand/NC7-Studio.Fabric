@@ -1,15 +1,20 @@
-import { Canvas, Rect, type FabricObject } from 'fabric';
+import { Canvas, Rect, type FabricObject, type Group } from 'fabric';
 import type { LabOptions } from '../devlab/LabOptions';
+import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
+import { buildWorkAreaBed, isBedObject } from './WorkAreaBed';
 
 export interface FabricCanvasOptions {
   lab: LabOptions;
   backgroundColor?: string;
+  workArea?: WorkAreaConfigState;
 }
 
 export class FabricCanvas {
   readonly canvas: Canvas;
   private readonly lab: LabOptions;
+  private readonly workArea: WorkAreaConfigState;
+  private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
 
@@ -19,27 +24,52 @@ export class FabricCanvas {
     options: FabricCanvasOptions
   ) {
     this.lab = options.lab;
+    this.workArea = options.workArea ?? workAreaConfig.getState();
 
     if (!iconsReady()) {
       console.warn('[FabricCanvas] action icons not preloaded');
     }
 
     this.canvas = new Canvas(canvasEl, {
-      backgroundColor: options.backgroundColor ?? '#111827',
+      backgroundColor: options.backgroundColor ?? '#0b0f19',
       selection: true,
       preserveObjectStacking: true,
     });
 
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
+    this.drawBed();
     this.syncDimensions();
-    this.resizeObserver = new ResizeObserver(() => this.syncDimensions());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.syncDimensions();
+      this.fitBedInView();
+    });
     this.resizeObserver.observe(mountEl);
-    window.addEventListener('resize', this.syncDimensions);
+    window.addEventListener('resize', this.onWindowResize);
   }
 
-  /** Global hook: every new object gets custom controls when F-22 is on. */
+  private onWindowResize = (): void => {
+    this.syncDimensions();
+    this.fitBedInView();
+  };
+
+  getWorkAreaState(): WorkAreaConfigState {
+    return this.workArea;
+  }
+
+  private drawBed(): void {
+    if (this.bedGroup) {
+      this.canvas.remove(this.bedGroup);
+    }
+    this.bedGroup = buildWorkAreaBed(this.workArea);
+    this.canvas.add(this.bedGroup);
+    this.canvas.sendObjectToBack(this.bedGroup);
+    this.fitBedInView();
+  }
+
+  /** Global hook: user objects get custom controls when F-22 is on (not bed chrome). */
   private onObjectAdded(target?: FabricObject): void {
-    if (!target || target.type === 'activeSelection') return;
+    if (!target || isBedObject(target)) return;
+    if (target.type === 'activeSelection') return;
     if (!this.lab.isEnabled('F-22')) return;
     attachActionControls(target);
   }
@@ -51,11 +81,24 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   };
 
+  fitBedInView(): void {
+    const { width: bedW, height: bedH } = this.workArea.blockSize;
+    const canvasW = this.canvas.getWidth();
+    const canvasH = this.canvas.getHeight();
+    const padding = 48;
+    const zoom = Math.min((canvasW - padding * 2) / bedW, (canvasH - padding * 2) / bedH, 2);
+    const tx = (canvasW - bedW * zoom) / 2;
+    const ty = (canvasH - bedH * zoom) / 2;
+    this.canvas.setViewportTransform([zoom, 0, 0, zoom, tx, ty]);
+    this.canvas.requestRenderAll();
+  }
+
   addRectangle(): FabricObject {
     this.rectCount += 1;
+    const m = this.workArea.margins;
     const rect = new Rect({
-      left: 120 + (this.rectCount % 5) * 24,
-      top: 100 + (this.rectCount % 5) * 18,
+      left: m.left + 40 + (this.rectCount % 5) * 24,
+      top: m.top + 40 + (this.rectCount % 5) * 18,
       fill: '#6366f1',
       width: 160,
       height: 100,
@@ -75,19 +118,23 @@ export class FabricCanvas {
     return rect;
   }
 
+  /** User objects only (excludes bed group). */
+  getUserObjectCount(): number {
+    return this.canvas.getObjects().filter((o) => !isBedObject(o)).length;
+  }
+
   getActiveObjectName(): string | null {
     const active = this.canvas.getActiveObject();
-    if (!active) return null;
+    if (!active || isBedObject(active)) return null;
     return active.type ?? 'object';
   }
 
   resetView(): void {
-    this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-    this.canvas.requestRenderAll();
+    this.fitBedInView();
   }
 
   dispose(): void {
-    window.removeEventListener('resize', this.syncDimensions);
+    window.removeEventListener('resize', this.onWindowResize);
     this.resizeObserver?.disconnect();
     this.canvas.dispose();
   }

@@ -1,3 +1,4 @@
+import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
 import type { PanelId } from '../StudioShell/toolbarIcons';
 import { icons } from '../StudioShell/toolbarIcons';
 import {
@@ -25,7 +26,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 2a shell — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 2b work area bed — port 3010');
   }
 
   private renderLayout(): string {
@@ -80,7 +81,7 @@ export class StudioShell {
               <button type="button" id="btn-tools" class="action-btn" title="Tools" aria-label="Tools">${icons.wrench}</button>
             </div>
             <div class="material-info-badge">
-              <span>Material: 1200 × 600 mm</span>
+              <span id="material-info-label">${workAreaConfig.getMaterialLabel()}</span>
             </div>
           </div>
 

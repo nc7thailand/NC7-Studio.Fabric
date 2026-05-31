@@ -1,4 +1,5 @@
 import { icons } from '../StudioShell/toolbarIcons';
+import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
 
 export function renderFileSidebar(objectCount: number): string {
   return `
@@ -57,18 +58,18 @@ export function renderSetupPanel(): string {
         <div class="input-group">
           <label>Block width</label>
           <div class="input-wrapper">
-            <input type="number" value="1200" disabled />
+            <input type="number" value="${workAreaConfig.getState().blockSize.width}" disabled />
             <span class="unit-label">mm</span>
           </div>
         </div>
         <div class="input-group">
           <label>Block height</label>
           <div class="input-wrapper">
-            <input type="number" value="600" disabled />
+            <input type="number" value="${workAreaConfig.getState().blockSize.height}" disabled />
             <span class="unit-label">mm</span>
           </div>
         </div>
-        <p class="section-hint">Editable setup — Phase 2b</p>
+        <p class="section-hint">Margins ${workAreaConfig.getState().margins.left} mm — editable in Phase 2c</p>
       </div>
     </div>
   `;
