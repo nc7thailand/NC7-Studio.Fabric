@@ -8,6 +8,7 @@ import {
   renderToolsPanel,
   renderVectorizerPanel,
   type ObjectPanelData,
+  type VectorizerPanelState,
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
@@ -20,7 +21,11 @@ export class StudioShell {
   private openPanel: PanelId = null;
   private menuOpen = false;
   private canvas: CanvasViewportHandle | null = null;
-  private vectorizerLastResult: string | null = null;
+  private vectorizerState: VectorizerPanelState = {
+    message: null,
+    status: 'idle',
+    config: vectorCore.getConfig(),
+  };
   private transformOverlay: TransformOverlayDetail | null = null;
   private setupUnsub: (() => void) | null = null;
 
@@ -35,7 +40,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 5 clipboard, F-12, transform HUD, import handoff — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 6 V-01 potrace WASM vectorizer — port 3010');
   }
 
   private renderLayout(): string {
@@ -60,7 +65,7 @@ export class StudioShell {
 
         <section id="Pnl-Vectorizer" class="floating-panel" role="dialog" aria-label="Trace image" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          <div id="vectorizer-panel-host">${renderVectorizerPanel(null)}</div>
+          <div id="vectorizer-panel-host">${renderVectorizerPanel(this.vectorizerState)}</div>
         </section>
 
         <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
@@ -495,20 +500,74 @@ export class StudioShell {
   private refreshVectorizerPanel(): void {
     const host = this.root.querySelector('#vectorizer-panel-host');
     if (!(host instanceof HTMLElement)) return;
-    host.innerHTML = renderVectorizerPanel(this.vectorizerLastResult);
+    this.vectorizerState.config = vectorCore.getConfig();
+    host.innerHTML = renderVectorizerPanel(this.vectorizerState);
     this.bindVectorizerPanel(host);
   }
 
+  private setVectorizerState(partial: Partial<VectorizerPanelState>): void {
+    this.vectorizerState = { ...this.vectorizerState, ...partial };
+    const resultEl = this.root.querySelector('#vectorizer-result');
+    if (resultEl instanceof HTMLElement) {
+      const { message, status } = this.vectorizerState;
+      resultEl.textContent =
+        message ??
+        (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
+      resultEl.classList.remove('is-empty', 'is-processing', 'is-done', 'is-error');
+      if (status === 'processing') resultEl.classList.add('is-processing');
+      else if (status === 'done') resultEl.classList.add('is-done');
+      else if (status === 'error') resultEl.classList.add('is-error');
+      else if (!message) resultEl.classList.add('is-empty');
+    }
+  }
+
   private bindVectorizerPanel(scope: ParentNode): void {
+    const thresholdEl = scope.querySelector('#trace-threshold');
+    const thresholdValueEl = scope.querySelector('#trace-threshold-value');
+    const turdEl = scope.querySelector('#trace-turdsize');
+
+    thresholdEl?.addEventListener('input', (e) => {
+      const input = e.target as HTMLInputElement;
+      const n = parseInt(input.value, 10);
+      if (Number.isFinite(n)) {
+        vectorCore.setConfig({ threshold: n });
+        if (thresholdValueEl) thresholdValueEl.textContent = String(n);
+      }
+    });
+
+    turdEl?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const n = parseInt(input.value, 10);
+      if (Number.isFinite(n) && n >= 0) {
+        vectorCore.setConfig({ turdSize: n });
+      }
+    });
+
     scope.querySelector('#trace-image-upload')?.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement;
       const file = input.files?.[0];
       input.value = '';
       if (!file) return;
+
+      if (!labOptions.isEnabled('V-01')) {
+        this.setVectorizerState({
+          status: 'error',
+          message: 'VectorCore pipeline (V-01) is disabled in Dev Lab.',
+        });
+        return;
+      }
+
       void (async () => {
-        const result = await vectorCore.traceImage(file);
-        this.vectorizerLastResult = result.summary;
-        this.refreshVectorizerPanel();
+        this.setVectorizerState({ status: 'processing', message: 'Starting trace…' });
+        const result = await vectorCore.traceImage(file, (msg) => {
+          this.setVectorizerState({ status: 'processing', message: msg });
+        });
+
+        this.setVectorizerState({
+          status: result.job.status === 'error' ? 'error' : 'done',
+          message: result.summary,
+        });
+
         if (result.svgText && this.canvas) {
           const name = file.name.replace(/\.[^.]+$/, '') + '.svg';
           await this.canvas.importSvgText(result.svgText, name);

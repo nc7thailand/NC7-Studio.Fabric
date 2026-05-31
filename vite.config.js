@@ -5,4 +5,8 @@ export default defineConfig({
     port: 3010,
     host: true,
   },
+  optimizeDeps: {
+    exclude: ['esm-potrace-wasm'],
+  },
+  assetsInclude: ['**/*.wasm'],
 });

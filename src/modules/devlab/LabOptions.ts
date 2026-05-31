@@ -217,8 +217,8 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
       {
         id: 'V-01',
         label: 'VectorCore pipeline',
-        detail: 'Image → vector paths (esm-potrace-wasm ships Phase 6).',
-        status: 'partial',
+        detail: 'Image → esm-potrace-wasm trace → SVG import to canvas.',
+        status: 'live',
         defaultEnabled: true,
       },
     ],

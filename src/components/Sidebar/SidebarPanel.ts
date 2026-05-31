@@ -1,5 +1,6 @@
 import { icons } from '../StudioShell/toolbarIcons';
 import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
+import type { VectorCoreConfig } from '../../modules/vectorizer/VectorCore';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
@@ -42,7 +43,7 @@ export function renderFileSidebar(
     <aside class="panel-sidebar">
       <div class="sidebar-header">
         <h1 class="logo-text">NC7 Studio<span class="logo-accent">.Fabric</span></h1>
-        <span class="version-tag">Phase 4 · undo + nest</span>
+        <span class="version-tag">Phase 6 · potrace WASM</span>
       </div>
       <div class="tabs-nav">
         <button type="button" class="tab-btn active" data-tab="files">
@@ -145,28 +146,66 @@ export function renderSetupPanel(): string {
   `;
 }
 
-export function renderVectorizerPanel(lastResult: string | null): string {
+export type VectorizerPanelStatus = 'idle' | 'processing' | 'done' | 'error';
+
+export interface VectorizerPanelState {
+  message: string | null;
+  status: VectorizerPanelStatus;
+  config: VectorCoreConfig;
+}
+
+export function renderVectorizerPanel(state: VectorizerPanelState): string {
+  const { message, status, config } = state;
+  const statusClass =
+    status === 'processing'
+      ? 'is-processing'
+      : status === 'done'
+        ? 'is-done'
+        : status === 'error'
+          ? 'is-error'
+          : message
+            ? ''
+            : 'is-empty';
+  const displayMessage =
+    message ??
+    (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
+
   return `
     <div class="panel-sidebar vectorizer-panel-host">
       <div class="sidebar-header">
         <h1 class="logo-text">Trace <span class="logo-accent">Image</span></h1>
-        <span class="version-tag">VectorCore · Phase 3 stub</span>
+        <span class="version-tag">VectorCore · V-01 WASM</span>
       </div>
       <div class="sidebar-content">
         <p class="section-hint">
-          Upload a raster image to hand off to Module 3. Full potrace/WASM tracing arrives in Phase 4;
-          use <strong>Upload SVG</strong> in the File panel for cut-ready paths today.
+          Upload a raster image — potrace WASM traces paths and imports SVG to the foam bed.
+          F-50 auto-selects the new object when enabled in Dev Lab.
         </p>
-        <div class="upload-zone">
-          <label for="trace-image-upload" class="upload-label">
-            ${icons.upload}
-            <span class="upload-title">Choose image (PNG, JPG, …)</span>
-            <span class="upload-desc">Stub traces metadata only</span>
-          </label>
-          <input id="trace-image-upload" type="file" accept="image/*" class="hidden-file-input" />
+        <div class="input-grid">
+          <div class="input-group">
+            <label for="trace-threshold">Binarize threshold</label>
+            <div class="input-wrapper">
+              <input id="trace-threshold" type="range" min="10" max="240" step="1" value="${config.threshold}" ${status === 'processing' ? 'disabled' : ''} />
+              <span class="unit-label" id="trace-threshold-value">${config.threshold}</span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="trace-turdsize">Turd size (despeckle)</label>
+            <div class="input-wrapper">
+              <input id="trace-turdsize" type="number" min="0" max="50" step="1" value="${config.turdSize}" ${status === 'processing' ? 'disabled' : ''} />
+            </div>
+          </div>
         </div>
-        <div id="vectorizer-result" class="vectorizer-result ${lastResult ? '' : 'is-empty'}" role="status">
-          ${lastResult ?? 'No trace run yet.'}
+        <div class="upload-zone">
+          <label for="trace-image-upload" class="upload-label ${status === 'processing' ? 'is-disabled' : ''}">
+            ${icons.upload}
+            <span class="upload-title">Choose image (PNG, JPG)</span>
+            <span class="upload-desc">${status === 'processing' ? 'Tracing in progress…' : 'WASM potrace → SVG import'}</span>
+          </label>
+          <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
+        </div>
+        <div id="vectorizer-result" class="vectorizer-result ${statusClass}" role="status" aria-live="polite">
+          ${displayMessage}
         </div>
       </div>
     </div>

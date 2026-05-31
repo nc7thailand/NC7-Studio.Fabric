@@ -548,6 +548,26 @@ body.dev-route {
   font-style: italic;
 }
 
+.vectorizer-result.is-processing {
+  color: var(--accent-indigo, #818cf8);
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.vectorizer-result.is-done {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.vectorizer-result.is-error {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.upload-label.is-disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .mt-4 {
   margin-top: 16px;
 }

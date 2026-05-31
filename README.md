@@ -7,7 +7,7 @@ Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 
 ---
 
-## Phase 5 — clipboard, selection, transform HUD (current)
+## Phase 6 — V-01 potrace WASM vectorizer (current)
 
 ```text
 src/
@@ -17,17 +17,24 @@ src/
 │   └── DevLab/               # Feature Lab panel
 ├── modules/
 │   ├── canvas/               # Module 1: Fabric.js canvas engine
-│   │   ├── FabricCanvas.ts
-│   │   ├── canvasClipboard.ts
-│   │   ├── fabricObjectClone.ts
-│   │   └── controls/         # Custom delete / clone handles
 │   ├── devlab/               # Module 2: Feature Lab toggles
-│   │   └── LabOptions.ts
 │   ├── history/              # Global undo / redo
-│   └── vectorizer/           # Module 3: Vector pipeline stub
+│   ├── svg/                  # SVG import helpers
+│   └── vectorizer/           # Module 3: esm-potrace-wasm pipeline
 │       └── VectorCore.ts
 └── main.ts
 ```
+
+### Phase 6 delivered
+
+| Item | Status |
+|------|--------|
+| V-01 esm-potrace-wasm trace (PNG/JPG → SVG) | ✅ |
+| Trace Image panel with threshold / turd size | ✅ |
+| Progress status (tracing…, done, error) | ✅ |
+| Import handoff + F-50 auto-select | ✅ |
+| GlobalHistoryStack on trace import | ✅ |
+| Dev Lab flag V-01 | ✅ |
 
 ### Phase 5 delivered
 
@@ -88,12 +95,12 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | F-47 | Perimeter mm | ✅ | ✅ Phase 4 |
 | F-53 | Loop count badge | ✅ | ✅ Phase 4 |
 | **Handoff** |
-| F-50 | Auto-select after import | ✅ | ✅ Phase 5 |
-| V-01 | VectorCore pipeline | ✅ `/vectorizer` | 🔶 Phase 6 (WASM stub) |
+| F-50 | Auto-select after import | ✅ | ✅ Phase 5/6 |
+| V-01 | VectorCore pipeline | ✅ `/vectorizer` | ✅ Phase 6 WASM |
 | **Studio shell** |
 | Load SVG / demo file | ✅ | ✅ Phase 2 |
 | Foam bed + margins visual | ✅ | ✅ Phase 2b/3 |
-| Vectorizer → Studio route | ✅ | 🔶 Trace Image panel (stub) |
+| Vectorizer → Studio route | ✅ | ✅ Trace Image panel |
 | Feature Lab UI page | ✅ `/dev/canvas-features` | ✅ Dev Lab panel |
 | Global history toolbar | ✅ | ✅ Phase 4 |
 
@@ -106,7 +113,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Repo | Role | Last known good |
 |------|------|-----------------|
 | `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 5 |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 6 |
 
 **GitHub repo name (suggested):** `NC7-Studio.Fabric`
 
@@ -125,8 +132,8 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 ## Next phases (planned)
 
 1. **Phase 2** — Dev Lab UI, sidebar object list sync, load SVG ✅
-2. **Phase 3** — Foam bed margins, VectorCore port, vectorizer handoff ✅ (stub)
+2. **Phase 3** — Foam bed margins, VectorCore port, vectorizer handoff ✅
 3. **Phase 4** — Undo/history, auto-nest, CNC loop QA ✅
 4. **Phase 5** — Clipboard, F-12, transform HUD, import handoff ✅
-5. **Phase 6** — V-01 esm-potrace-wasm, vectorizer → canvas pipeline
+5. **Phase 6** — V-01 esm-potrace-wasm, vectorizer → canvas pipeline ✅
 6. **Cutover** — BK sign-off at checklist 100%
