@@ -1,0 +1,15 @@
+---
+description: Fewer approval prompts when BK says [RUN]
+alwaysApply: true
+---
+
+# Reduce clicks (BK)
+
+When BK sends **`[RUN]`** (or `[Chat mode OFF]`):
+
+- Execute the full task without stopping for confirmation between steps.
+- Batch git status + diff + build in one flow when committing.
+- Do not ask "should I continue?" — finish, then report once.
+- Only pause for approval when `.cursor/permissions.json` block rules apply (push, secrets, destructive git).
+
+BK is tired of clicking Allow/Submit all day. Minimize prompts; maximize done.

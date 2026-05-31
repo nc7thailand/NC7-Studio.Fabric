@@ -1,0 +1,22 @@
+{
+  "autoRun": {
+    "allow_instructions": [
+      "When BK says [RUN], auto-approve normal NC7 Studio.Fabric dev work in this repo unless a block rule matches.",
+      "Read-only shell is fine: ls, cat, head, tail, pwd, which, wc, grep, rg, find, test, hostname, whoami.",
+      "Git read is fine: git status, git diff, git log, git show, git branch, git rev-parse.",
+      "Git write in this repo is fine on [RUN]: git add, git commit (not push unless BK asked).",
+      "npm in this repo is fine: npm install, npm run dev, npm run build, vite build.",
+      "Vite dev on port 3010 is fine.",
+      "Edits under src/, public/, index.html, vite.config.js are fine.",
+      "Read-only browser MCP and open_resource for project files or localhost:3010 are fine.",
+      "WebFetch/WebSearch for docs (fabric.js, vite, npm, github) is fine."
+    ],
+    "block_instructions": [
+      "Always ask before git push, git push --force, git reset --hard, git clean -fd, git rebase.",
+      "Always ask before reading or writing .env, credentials, secrets, or API keys.",
+      "Always ask before sudo, rm -rf, global installs, or changes outside this repo.",
+      "Always ask before editing AG-NC7-FoamArt-Studio (legacy Three.js production — cutover rule).",
+      "Always ask before destructive automation MCP without BK review."
+    ]
+  }
+}

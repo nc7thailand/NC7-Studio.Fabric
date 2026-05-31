@@ -7,7 +7,18 @@ Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 
 ---
 
-## Phase 6 — V-01 potrace WASM vectorizer (current)
+## Phase 7 — Cutover prep (current)
+
+| Item | Status |
+|------|--------|
+| Parity checklist 100% | ✅ |
+| [CUTOVER.md](CUTOVER.md) BK sign-off guide | ✅ |
+| `.cursor/` Auto-review permissions | ✅ committed |
+| GitHub push | ⬜ BK asks when ready |
+
+---
+
+## Phase 6 — V-01 potrace WASM vectorizer
 
 ```text
 src/
@@ -113,7 +124,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Repo | Role | Last known good |
 |------|------|-----------------|
 | `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 6 |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 7 |
 
 **GitHub repo name (suggested):** `NC7-Studio.Fabric`
 
@@ -136,4 +147,5 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 3. **Phase 4** — Undo/history, auto-nest, CNC loop QA ✅
 4. **Phase 5** — Clipboard, F-12, transform HUD, import handoff ✅
 5. **Phase 6** — V-01 esm-potrace-wasm, vectorizer → canvas pipeline ✅
-6. **Cutover** — BK sign-off at checklist 100%
+6. **Phase 7** — Cutover prep, CUTOVER.md, save game ✅
+7. **Cutover** — BK sign-off → switch production when ready
