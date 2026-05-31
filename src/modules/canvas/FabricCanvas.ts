@@ -1,4 +1,4 @@
-import { Canvas, Rect, util, type FabricObject, type Group } from 'fabric';
+import { Canvas, Rect, util, type FabricObject, type Group, type TPointerEvent } from 'fabric';
 import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
@@ -8,7 +8,7 @@ import {
   clampFabricObjectPosition,
   getFabricPlacementLimits,
 } from './marginUtils';
-import type { WorkAreaManager } from './WorkAreaManager';
+import type { WorkAreaManager, SceneObject } from './WorkAreaManager';
 import { getSceneCanvas } from './sceneCanvas';
 import {
   autoPlaceOnBed,
@@ -27,6 +27,24 @@ import {
 } from '../history/transformSnapshot';
 import { countObjectLoops, getLoopSummary, totalPerimeterMm } from './loopMetrics';
 import type { LoopInfo } from './loopMetrics';
+import {
+  copySelectionToClipboard,
+  duplicateSelection,
+  pasteFromClipboard,
+  type ClipboardHost,
+} from './canvasClipboard';
+
+export interface TransformOverlayDetail {
+  visible: boolean;
+  mode: 'move' | 'resize' | 'rotate';
+  clientX: number;
+  clientY: number;
+  widthMm: number;
+  heightMm: number;
+  rotationDeg: number;
+  posX: number;
+  posY: number;
+}
 
 export interface FabricCanvasOptions {
   lab: LabOptions;
@@ -35,6 +53,7 @@ export interface FabricCanvasOptions {
   workArea?: WorkAreaConfigState;
   onDoubleClickObject?: () => void;
   onHistoryChange?: (state: HistoryState) => void;
+  onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
 }
 
 const DEMO_SIZES_MM = [180, 140, 220, 120, 160];
@@ -46,6 +65,7 @@ export class FabricCanvas {
   private workArea: WorkAreaConfigState;
   private readonly onDoubleClickObject?: () => void;
   private readonly onHistoryChange?: (state: HistoryState) => void;
+  private readonly onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
@@ -65,6 +85,7 @@ export class FabricCanvas {
     this.workArea = options.workArea ?? workAreaConfig.getState();
     this.onDoubleClickObject = options.onDoubleClickObject;
     this.onHistoryChange = options.onHistoryChange;
+    this.onTransformOverlay = options.onTransformOverlay;
 
     if (!iconsReady()) {
       console.warn('[FabricCanvas] action icons not preload');
@@ -100,14 +121,17 @@ export class FabricCanvas {
     this.canvas.on('object:moving', (e) => {
       this.lastInteractionType = 'move';
       this.onObjectTransformDuring(e.target);
+      this.updateTransformHud(e.e, e.target, 'move');
     });
     this.canvas.on('object:scaling', (e) => {
       this.lastInteractionType = 'resize';
       this.onObjectTransformDuring(e.target);
+      this.updateTransformHud(e.e, e.target, 'resize');
     });
     this.canvas.on('object:rotating', (e) => {
       this.lastInteractionType = 'rotate';
       this.onObjectTransformDuring(e.target);
+      this.updateTransformHud(e.e, e.target, 'rotate');
     });
     this.canvas.on('object:modified', (e) => {
       this.onObjectTransformDuring(e.target);
@@ -213,10 +237,83 @@ export class FabricCanvas {
     this.interactionSnapshot = buildFabricTransformState(target);
   }
 
+  private clipboardHost(): ClipboardHost {
+    return {
+      lab: this.lab,
+      getSelected: () => this.manager.getSelected(),
+      placeClone: (obj, id, name) => this.placeClonedObject(obj, id, name),
+      recordAdd: (scene) => this.recordAdd(scene),
+    };
+  }
+
+  private placeClonedObject(obj: FabricObject, id: string, name: string): SceneObject {
+    obj.set({ sceneId: id, sceneName: name });
+    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(obj);
+    }
+    this.canvas.add(obj);
+    const scene = { id, name, fabricRef: obj };
+    this.manager.addObject(scene);
+    this.manager.selectObject(id);
+    this.canvas.setActiveObject(obj);
+    this.canvas.requestRenderAll();
+    return scene;
+  }
+
+  copyToClipboard(): boolean {
+    return copySelectionToClipboard(this.clipboardHost());
+  }
+
+  async pasteFromClipboard(): Promise<SceneObject | null> {
+    return pasteFromClipboard(this.clipboardHost());
+  }
+
+  async duplicateSelected(): Promise<SceneObject | null> {
+    return duplicateSelection(this.clipboardHost());
+  }
+
+  cycleFocus(): void {
+    if (!this.lab.isEnabled('F-12')) return;
+    this.manager.cycleFocus();
+  }
+
+  private hideTransformHud(): void {
+    this.onTransformOverlay?.(null);
+  }
+
+  private updateTransformHud(
+    pointerEvent: TPointerEvent | undefined,
+    target: FabricObject | undefined,
+    mode: TransformOverlayDetail['mode']
+  ): void {
+    if (!this.lab.isEnabled('F-31') || !this.onTransformOverlay || !target || isBedObject(target)) {
+      return;
+    }
+    if (!pointerEvent || !('clientX' in pointerEvent)) {
+      return;
+    }
+    target.setCoords();
+    const bounds = target.getBoundingRect();
+    this.onTransformOverlay({
+      visible: true,
+      mode,
+      clientX: pointerEvent.clientX + 16,
+      clientY: pointerEvent.clientY + 16,
+      widthMm: bounds.width,
+      heightMm: bounds.height,
+      rotationDeg: target.angle ?? 0,
+      posX: target.left ?? 0,
+      posY: target.top ?? 0,
+    });
+  }
+
   private finalizeInteraction(target?: FabricObject): void {
+    this.hideTransformHud();
     const snapshot = this.interactionSnapshot;
     this.interactionSnapshot = null;
     if (!target || isBedObject(target) || target.type === 'activeSelection') return;
+    if (!this.lab.isEnabled('F-31')) return;
     if (!snapshot || !this.shouldRecordHistory()) return;
 
     const scene = this.manager.findByFabric(target);
@@ -239,7 +336,9 @@ export class FabricCanvas {
   }
 
   async redo(): Promise<boolean> {
-    if (!this.lab.isEnabled('CORE-UNDO') || !this.lab.isEnabled('F-32')) return false;
+    if (!this.lab.isEnabled('CORE-UNDO') || !this.lab.isEnabled('F-32') || !this.lab.isEnabled('F-31')) {
+      return false;
+    }
     return globalHistory.redo(this.historyAdapter());
   }
 
@@ -356,7 +455,7 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   }
 
-  async importSvg(svgText: string, name: string, maxMm?: number): Promise<void> {
+  async importSvg(svgText: string, name: string, maxMm?: number): Promise<string> {
     const obj = await fabricObjectFromSvg(svgText);
     if (maxMm != null) scaleToMaxMm(obj, maxMm);
     autoPlaceOnBed(obj, this.existingUserObjects(), this.placementLimits(), 10);
@@ -364,13 +463,17 @@ export class FabricCanvas {
       this.clampObjectInMargins(obj);
     }
     const id = this.manager.newId();
+    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
     this.canvas.add(obj);
     const scene = { id, name, fabricRef: obj };
     this.manager.addObject(scene);
     this.recordAdd(scene);
-    this.manager.selectObject(id);
-    this.canvas.setActiveObject(obj);
+    if (this.lab.isEnabled('F-50')) {
+      this.manager.selectObject(id);
+      this.canvas.setActiveObject(obj);
+    }
     this.canvas.requestRenderAll();
+    return id;
   }
 
   async loadDemoSvg(): Promise<void> {

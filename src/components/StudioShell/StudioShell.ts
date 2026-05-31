@@ -11,6 +11,7 @@ import {
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
+import type { TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
 import { vectorCore } from '../../modules/vectorizer/VectorCore';
 import { labOptions } from '../../modules/devlab/LabOptions';
 
@@ -20,6 +21,7 @@ export class StudioShell {
   private menuOpen = false;
   private canvas: CanvasViewportHandle | null = null;
   private vectorizerLastResult: string | null = null;
+  private transformOverlay: TransformOverlayDetail | null = null;
   private setupUnsub: (() => void) | null = null;
 
   constructor(private readonly mountSelector = '#app') {
@@ -33,7 +35,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 4 undo, auto-nest, CNC loop QA — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 5 clipboard, F-12, transform HUD, import handoff — port 3010');
   }
 
   private renderLayout(): string {
@@ -104,10 +106,11 @@ export class StudioShell {
           </div>
 
           <div class="canvas-overlay-bottom">
+            <div id="transform-hud" class="transform-dim-overlay" hidden aria-live="polite"></div>
             <div class="nav-hints-badge">
               <div class="hint-item"><span>Scroll: Zoom · Drag canvas: Pan · 2D bed</span></div>
               <span class="hint-divider">|</span>
-              <div class="hint-item"><span>Green + clone · Red × delete</span></div>
+              <div class="hint-item"><span>Cmd+C/V · Cmd+D duplicate · F6 cycle</span></div>
               <span class="hint-divider">|</span>
               <div class="hint-item"><span>Double-click object: Properties</span></div>
             </div>
@@ -135,6 +138,10 @@ export class StudioShell {
         this.syncPanelsUi();
         this.refreshObjectPanel();
       },
+      onTransformOverlay: (detail) => {
+        this.transformOverlay = detail;
+        this.syncTransformHud();
+      },
     });
 
     bindDevLabPanel(this.root);
@@ -154,6 +161,7 @@ export class StudioShell {
       this.updateToolbarUi();
       this.updateSelectionUi();
       this.refreshObjectPanel();
+      this.syncTransformHud();
     });
 
     this.refreshFilePanel();
@@ -213,8 +221,6 @@ export class StudioShell {
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.closePanels();
 
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
       const target = e.target;
       if (
         target instanceof HTMLInputElement ||
@@ -224,15 +230,43 @@ export class StudioShell {
         return;
       }
 
+      if (labOptions.isEnabled('F-12') && e.key === 'F6') {
+        e.preventDefault();
+        this.canvas?.cycleFocus();
+        return;
+      }
+
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+
+      if (e.key === 'd' && labOptions.isEnabled('F-01') && labOptions.isEnabled('F-04')) {
+        e.preventDefault();
+        void this.canvas?.duplicateSelected();
+        return;
+      }
+
+      if (e.key === 'c' && labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
+        e.preventDefault();
+        this.canvas?.copyToClipboard();
+        return;
+      }
+
+      if (e.key === 'v' && labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
+        e.preventDefault();
+        void this.canvas?.pasteFromClipboard();
+        return;
+      }
+
       if (e.key === 'z' && !e.shiftKey && labOptions.isEnabled('CORE-UNDO')) {
         e.preventDefault();
         void this.canvas?.undo();
+        return;
       }
       if (
         (e.key === 'z' && e.shiftKey && labOptions.isEnabled('F-32')) ||
         (e.key === 'y' && labOptions.isEnabled('F-32'))
       ) {
-        if (!labOptions.isEnabled('CORE-UNDO')) return;
+        if (!labOptions.isEnabled('CORE-UNDO') || !labOptions.isEnabled('F-31')) return;
         e.preventDefault();
         void this.canvas?.redo();
       }
@@ -354,7 +388,10 @@ export class StudioShell {
     const objectCount = this.canvas.getObjectCount();
     const undoEnabled = history.canUndo && labOptions.isEnabled('CORE-UNDO');
     const redoEnabled =
-      history.canRedo && labOptions.isEnabled('CORE-UNDO') && labOptions.isEnabled('F-32');
+      history.canRedo &&
+      labOptions.isEnabled('CORE-UNDO') &&
+      labOptions.isEnabled('F-32') &&
+      labOptions.isEnabled('F-31');
     const nestEnabled =
       objectCount >= 2 && labOptions.isEnabled('CORE-NEST');
 
@@ -472,8 +509,34 @@ export class StudioShell {
         const result = await vectorCore.traceImage(file);
         this.vectorizerLastResult = result.summary;
         this.refreshVectorizerPanel();
+        if (result.svgText && this.canvas) {
+          const name = file.name.replace(/\.[^.]+$/, '') + '.svg';
+          await this.canvas.importSvgText(result.svgText, name);
+        }
       })();
     });
+  }
+
+  private syncTransformHud(): void {
+    const el = this.root.querySelector('#transform-hud');
+    if (!(el instanceof HTMLElement)) return;
+    const detail = this.transformOverlay;
+    if (!detail?.visible || !labOptions.isEnabled('F-31')) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.style.left = `${detail.clientX}px`;
+    el.style.top = `${detail.clientY}px`;
+    if (detail.mode === 'move') {
+      el.textContent = `X = ${detail.posX.toFixed(2)} mm  Y = ${detail.posY.toFixed(2)} mm`;
+    } else if (detail.mode === 'rotate') {
+      el.textContent = `↻ ${detail.rotationDeg.toFixed(1)}°`;
+    } else {
+      const rot =
+        Math.abs(detail.rotationDeg) > 0.05 ? ` · ${detail.rotationDeg.toFixed(1)}°` : '';
+      el.textContent = `W = ${detail.widthMm.toFixed(2)} mm  H = ${detail.heightMm.toFixed(2)} mm${rot}`;
+    }
   }
 
   private updateMaterialLabel(): void {

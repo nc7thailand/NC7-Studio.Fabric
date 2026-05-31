@@ -1,6 +1,6 @@
 /**
- * Module 3 — Vector processing entry point (Phase 3 handoff stub).
- * Image-to-vector algorithms migrate from legacy Studio in Phase 4+.
+ * Module 3 — Vector processing entry point.
+ * V-01 (esm-potrace-wasm) deferred to Phase 6 — stub queues job metadata only.
  */
 
 export type VectorJobStatus = 'idle' | 'queued' | 'processing' | 'done' | 'error';
@@ -14,7 +14,6 @@ export interface VectorJob {
 }
 
 export interface VectorCoreConfig {
-  /** Potrace / WASM threshold — wired in Phase 4+ */
   threshold: number;
   turdSize: number;
 }
@@ -22,8 +21,10 @@ export interface VectorCoreConfig {
 export interface TraceImageResult {
   paths: string[];
   job: VectorJob;
-  /** Human-readable status for UI (Phase 3 placeholder). */
+  /** Human-readable status for UI. */
   summary: string;
+  /** SVG string when trace succeeds — wired to F-50 import handoff. */
+  svgText?: string;
 }
 
 const DEFAULT_CONFIG: VectorCoreConfig = {
@@ -31,8 +32,8 @@ const DEFAULT_CONFIG: VectorCoreConfig = {
   turdSize: 2,
 };
 
-const PHASE3_STUB_SUMMARY =
-  'VectorCore received your image. Full potrace/WASM tracing ships in Phase 4 — import SVG manually for now.';
+const PHASE6_STUB_SUMMARY =
+  'VectorCore received your image. Full esm-potrace-wasm tracing ships in Phase 6 — import SVG manually for now (F-50 auto-select applies).';
 
 export class VectorCore {
   private config: VectorCoreConfig;
@@ -46,21 +47,21 @@ export class VectorCore {
     return { ...this.config };
   }
 
-  /** Phase 3 stub — queues job metadata; no paths until WASM port. */
+  /** Phase 5 stub — no WASM trace yet; returns summary only (no svgText). */
   async traceImage(file: File): Promise<TraceImageResult> {
     const job: VectorJob = {
       id: `job-${Date.now()}`,
       sourceName: file.name,
       status: 'done',
       createdAt: Date.now(),
-      message: PHASE3_STUB_SUMMARY,
+      message: PHASE6_STUB_SUMMARY,
     };
     this.jobs.push(job);
-    console.info('[VectorCore] traceImage stub', file.name, this.config);
+    console.info('[VectorCore] traceImage stub (Phase 6: esm-potrace-wasm)', file.name, this.config);
     return {
       paths: [],
       job,
-      summary: `${PHASE3_STUB_SUMMARY} (${file.name}, ${(file.size / 1024).toFixed(1)} KB)`,
+      summary: `${PHASE6_STUB_SUMMARY} (${file.name}, ${(file.size / 1024).toFixed(1)} KB)`,
     };
   }
 
@@ -69,7 +70,7 @@ export class VectorCore {
   }
 
   getMigrationNote(): string {
-    return 'Port esm-potrace-wasm + vectorizer handoff from AG-NC7-FoamArt-Studio in Phase 4.';
+    return 'Phase 6: port esm-potrace-wasm from AG-NC7-FoamArt-Studio into traceImage() → svgText → F-50 handoff.';
   }
 }
 

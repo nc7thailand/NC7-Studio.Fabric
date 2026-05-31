@@ -1,17 +1,22 @@
 import { labOptions } from '../../modules/devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../../modules/config/WorkAreaConfig';
 import { workAreaManager, type WorkAreaManager } from '../../modules/canvas/WorkAreaManager';
-import { FabricCanvas } from '../../modules/canvas/FabricCanvas';
+import { FabricCanvas, type TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
 import type { HistoryState } from '../../modules/history/GlobalHistoryStack';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
 export interface CanvasViewportHandle {
   manager: WorkAreaManager;
-  importSvgFile: (file: File) => Promise<void>;
+  importSvgFile: (file: File) => Promise<string | null>;
+  importSvgText: (svgText: string, name: string) => Promise<string | null>;
   loadDemoSvg: () => Promise<void>;
   addRectangle: () => void;
   removeObject: (id: string) => void;
   selectObject: (id: string | null) => void;
+  copyToClipboard: () => boolean;
+  pasteFromClipboard: () => Promise<void>;
+  duplicateSelected: () => Promise<void>;
+  cycleFocus: () => void;
   getObjectCount: () => number;
   getActiveObjectName: () => string | null;
   getSelectedLoopMetrics: () => { count: number; loops: LoopInfo[]; totalPerimeterMm: number };
@@ -23,16 +28,22 @@ export interface CanvasViewportHandle {
   applyWorkAreaConfig: (state: WorkAreaConfigState) => void;
   onSceneChange: (cb: () => void) => void;
   onHistoryChange: (cb: (state: HistoryState) => void) => void;
+  onTransformOverlay: (cb: (detail: TransformOverlayDetail | null) => void) => void;
   dispose: () => void;
 }
 
 export function mountCanvasViewport(
   containerEl: HTMLElement,
   canvasEl: HTMLCanvasElement,
-  options?: { onDoubleClickObject?: () => void }
+  options?: {
+    onDoubleClickObject?: () => void;
+    onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
+  }
 ): CanvasViewportHandle {
   const manager = workAreaManager;
   let historyCallback: ((state: HistoryState) => void) | null = null;
+  let transformOverlayCallback: ((detail: TransformOverlayDetail | null) => void) | null =
+    options?.onTransformOverlay ?? null;
 
   const fabric = new FabricCanvas(canvasEl, containerEl, {
     lab: labOptions,
@@ -40,6 +51,7 @@ export function mountCanvasViewport(
     workArea: workAreaConfig.getState(),
     onDoubleClickObject: options?.onDoubleClickObject,
     onHistoryChange: (state) => historyCallback?.(state),
+    onTransformOverlay: (detail) => transformOverlayCallback?.(detail),
   });
 
   workAreaConfig.subscribe((state) => {
@@ -63,12 +75,21 @@ export function mountCanvasViewport(
     manager,
     importSvgFile: async (file: File) => {
       const text = await file.text();
-      await fabric.importSvg(text, file.name);
+      return fabric.importSvg(text, file.name);
     },
+    importSvgText: (svgText, name) => fabric.importSvg(svgText, name),
     loadDemoSvg: () => fabric.loadDemoSvg(),
     addRectangle: () => fabric.addRectangle(),
     removeObject: (id) => fabric.removeSceneObject(id),
     selectObject: (id) => manager.selectObject(id),
+    copyToClipboard: () => fabric.copyToClipboard(),
+    pasteFromClipboard: async () => {
+      await fabric.pasteFromClipboard();
+    },
+    duplicateSelected: async () => {
+      await fabric.duplicateSelected();
+    },
+    cycleFocus: () => fabric.cycleFocus(),
     getObjectCount: () => fabric.getUserObjectCount(),
     getActiveObjectName: () => fabric.getActiveObjectName(),
     getSelectedLoopMetrics: () => fabric.getSelectedLoopMetrics(),
@@ -84,6 +105,9 @@ export function mountCanvasViewport(
     onHistoryChange: (cb) => {
       historyCallback = cb;
       cb(fabric.getHistoryState());
+    },
+    onTransformOverlay: (cb) => {
+      transformOverlayCallback = cb;
     },
     dispose: () => fabric.dispose(),
   };

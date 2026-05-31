@@ -1,4 +1,7 @@
-import { Control, util, type FabricObject, type TPointerEvent, type Transform } from 'fabric';
+import { Control, type FabricObject, type TPointerEvent, type Transform } from 'fabric';
+import { labOptions } from '../../devlab/LabOptions';
+import { DUPLICATE_OFFSET_MM } from '../canvasClipboard';
+import { deepCloneFabricObject, duplicateName } from '../fabricObjectClone';
 import { getSceneCanvas } from '../sceneCanvas';
 import { cloneIcon, CONTROL_SIZE, deleteIcon } from './icons';
 import { renderIcon } from './renderIcon';
@@ -22,31 +25,28 @@ export function deleteObject(
   return true;
 }
 
-/** Fabric v7: target.clone() returns Promise<this>. */
+/** Fabric v7: target.clone() returns Promise<this>. F-04 + F-01 gated. */
 export function cloneObject(
   _eventData: TPointerEvent,
   transform: Transform
 ): boolean {
+  if (!labOptions.isEnabled('F-04') || !labOptions.isEnabled('F-01')) return true;
+
   const target = transform.target;
   const canvas = getSceneCanvas(target.canvas);
   if (!canvas) return true;
 
-  void target
-    .clone()
+  void deepCloneFabricObject(target, {
+    left: parseFloat(((target.left ?? 0) + DUPLICATE_OFFSET_MM).toFixed(2)),
+    top: parseFloat(((target.top ?? 0) + DUPLICATE_OFFSET_MM).toFixed(2)),
+  })
     .then((cloned) => {
-      cloned.set({
-        left: (cloned.left ?? 0) + 10,
-        top: (cloned.top ?? 0) + 10,
-        evented: true,
-      });
-      canvas.add(cloned);
       attachActionControls(cloned);
+      canvas.add(cloned);
 
       const mgr = canvas.workAreaManager;
       const src = mgr?.findByFabric(target);
-      const name = src
-        ? `${src.name.replace(/\.svg$/i, '')} copy.svg`
-        : `copy-${Date.now()}.svg`;
+      const name = src ? duplicateName(src.name) : `copy-${Date.now()}.svg`;
       const id = mgr?.newId() ?? `${Date.now()}`;
       cloned.set('sceneId', id);
       cloned.set('sceneName', name);
@@ -102,4 +102,4 @@ export function attachActionControls(obj: FabricObject): void {
   obj.controls.cloneControl = cloneControl;
 }
 
-export { util };
+export { util } from 'fabric';

@@ -76,6 +76,17 @@ export class WorkAreaManager {
     return this.findById(this.selectedObjectId);
   }
 
+  /** F-12: advance selection to the next object (sidebar order, wraps). */
+  cycleFocus(): void {
+    if (this.objects.length === 0) {
+      this.selectObject(null);
+      return;
+    }
+    const currentIdx = this.objects.findIndex((o) => o.id === this.selectedObjectId);
+    const nextIdx = currentIdx < 0 ? 0 : (currentIdx + 1) % this.objects.length;
+    this.selectObject(this.objects[nextIdx].id);
+  }
+
   newId(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   }
