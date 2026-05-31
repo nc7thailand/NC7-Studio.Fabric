@@ -1,20 +1,46 @@
 # AG-NC7-FoamArt-Fabric
 
-**Sibling spike repo** — Fabric.js v7 custom-controls experiment.  
-**Not** FoamArt Studio. Main product stays Three.js in `AG-NC7-FoamArt-Studio`.
+**NC7 FoamArt Studio v2** — Fabric.js engine sibling repo (**Choice A**).  
+Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 
-## Purpose
+**Cutover rule (BK + JM):** Fabric v2 replaces Studio only at **100% feature parity** with legacy.
 
-Test Fabric v7 mouse precision and custom bbox controls (clone / delete) in isolation before any merge decision.
+---
 
-Implements JM / CRA checklist:
+## Phase 1 — modular architecture (current)
 
-- `new Control({ ... })` for delete + clone
-- `target.clone()` as **Promise** (v7)
-- `renderIcon` with `util.degreesToRadians` + preloaded icon canvas
-- Per-object `rect.controls.deleteControl` / `rect.controls.cloneControl`
+```text
+src/
+├── components/
+│   └── StudioShell/          # Core UI layout & sidebar
+├── modules/
+│   ├── canvas/               # Module 1: Fabric.js canvas engine
+│   │   ├── FabricCanvas.ts
+│   │   └── controls/         # Custom delete / clone handles
+│   ├── devlab/               # Module 2: Feature Lab toggles
+│   │   └── LabOptions.ts
+│   └── vectorizer/           # Module 3: Vector pipeline stub
+│       └── VectorCore.ts
+└── main.ts
+```
 
-## Run (AG Mini / MCM)
+### Phase 1 delivered
+
+| Item | Status |
+|------|--------|
+| Studio shell (header, sidebar, toolbar, canvas bed) | ✅ |
+| Fabric v7 canvas wrapper (`FabricCanvas`) | ✅ |
+| Global action controls on `object:added` (F-22) | ✅ |
+| Green clone (+10px, async `clone().then`) | ✅ |
+| Red delete (`mouseUpHandler`) | ✅ |
+| `renderIcon` + `degreesToRadians` | ✅ |
+| Dev Lab state (`LabOptions.ts`, localStorage) | ✅ scaffold |
+| Vectorizer entry (`VectorCore.ts`) | ✅ stub |
+| TypeScript + Vite | ✅ |
+
+---
+
+## Run
 
 ```bash
 cd AG-NC7-FoamArt-Fabric
@@ -22,35 +48,79 @@ npm install
 npm run dev
 ```
 
-Open:
+- http://localhost:3010  
+- http://100.64.95.27:3010 (Tailscale on MCM/Air when dev server running)
 
-- http://localhost:3010
-- http://100.64.95.27:3010 (Tailscale, if dev server bound to host)
+---
 
-## Test
+## Legacy Studio parity checklist
 
-1. Click **Add rectangle** (or use the auto-placed first rect)
-2. Select the shape — green **+** (clone), red **×** (delete) above corners
-3. Drag standard handles to resize — compare feel to [Fabric demo](https://fabricjs.com/demos/custom-controls/)
-4. Clone should offset +10 px; delete removes object
+Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 
-## GitHub
+| ID | Feature | Legacy | Fabric v2 |
+|----|---------|--------|-----------|
+| **Core** |
+| CORE-MOVE | Move object | ✅ | ✅ Fabric native |
+| CORE-RESIZE | Resize handles | ✅ | ✅ Fabric native |
+| CORE-SELECT | Single-click select | ✅ | ✅ |
+| CORE-UNDO | Undo stack | ✅ | ⬜ Phase 2+ |
+| CORE-NEST | Auto-nest | ✅ | ⬜ Phase 4+ |
+| CORE-CLAMP | Margin clamp | ✅ | ⬜ Phase 3+ |
+| **Clipboard** |
+| F-04 | Deep clone safety | ✅ | ⬜ |
+| F-01 | Duplicate + offset | ✅ | 🔶 +10px clone dot only |
+| F-02 | Keyboard copy/paste | ✅ | ⬜ |
+| F-06 | Multi-paste stepping | ✅ | ⬜ |
+| **Selection** |
+| F-10 | Deselect on empty canvas | ✅ | ✅ Fabric default |
+| F-11 | Sidebar ↔ canvas sync | ✅ | ⬜ Phase 2 |
+| F-12 | Cycle focus (F6) | ✅ | ⬜ |
+| **Transform** |
+| F-21 | Rotate handle | ✅ | 🔶 Fabric mtr (default) |
+| F-22 | Bbox action dots | ✅ | ✅ |
+| F-31 | Transform commit + HUD | ✅ | ⬜ |
+| F-32 | Redo | ✅ | ⬜ |
+| F-33 | 1:1 transform tracking | ✅ | ✅ native Fabric |
+| **Display / CNC QA** |
+| F-40 | Loop list | ✅ | ⬜ |
+| F-47 | Perimeter mm | ✅ | ⬜ |
+| F-53 | Loop count badge | ✅ | ⬜ |
+| **Handoff** |
+| F-50 | Auto-select after import | ✅ | ⬜ |
+| V-01 | VectorCore pipeline | ✅ `/vectorizer` | ⬜ Module 3 stub |
+| **Studio shell** |
+| Load SVG / demo file | ✅ | ⬜ Phase 2 |
+| Foam bed + margins visual | ✅ | ⬜ Phase 3 |
+| Vectorizer → Studio route | ✅ | ⬜ Phase 3+ |
+| Feature Lab UI page | ✅ `/dev/canvas-features` | ⬜ Phase 2 |
+| Global history toolbar | ✅ | ⬜ Phase 2+ |
 
-Create empty repo `AG-NC7-FoamArt-Fabric` on GitHub when ready, then:
+**Legend:** ✅ done · 🔶 partial · ⬜ not started
 
-```bash
-git remote add origin <your-repo-url>
-git push -u origin main
-```
+---
+
+## Git / save game
+
+| Repo | Role | Last known good |
+|------|------|-----------------|
+| `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
+| `AG-NC7-FoamArt-Fabric` | v2 spike (this repo) | local · Phase 1 scaffold |
+
+---
 
 ## Team
 
-| Who | Role |
-|-----|------|
-| BK | Owner — says Go / save points |
-| JM | Fabric v7 patterns & gotchas |
-| CRA | Spike scaffold on MCM |
+| Nickname | Role |
+|----------|------|
+| **BK** | Owner — Go / cutover decision |
+| **JM** | Fabric v7 architecture & gotchas |
+| **CRA** | Scaffold on MacBook Air M4 |
 
-## Save game
+---
 
-Main Studio save point: commit `44aae16` on `AG-NC7-FoamArt-Studio` main (Three.js production path).
+## Next phases (planned)
+
+1. **Phase 2** — Dev Lab UI, sidebar object list sync, load SVG  
+2. **Phase 3** — Foam bed margins, VectorCore port, vectorizer handoff  
+3. **Phase 4** — Undo/history, auto-nest, CNC loop QA  
+4. **Cutover** — BK sign-off at checklist 100%

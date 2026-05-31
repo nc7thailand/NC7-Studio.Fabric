@@ -1,0 +1,165 @@
+.studio-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: #0b0f19;
+  color: #e2e8f0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.studio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #334155;
+}
+
+.studio-header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.phase-badge {
+  font-size: 0.75rem;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #cbd5e1;
+}
+
+.studio-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.studio-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid #334155;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  margin-bottom: 20px;
+}
+
+.sidebar-section h2 {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.sidebar-hint {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+.object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.82rem;
+}
+
+.object-list-empty {
+  color: #64748b;
+  font-style: italic;
+}
+
+.studio-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.studio-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #334155;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background: #818cf8;
+}
+
+.toolbar-hint {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  background: #1e293b;
+  border-bottom: 1px solid #334155;
+}
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.canvas-mount {
+  flex: 1;
+  min-height: 400px;
+  margin: 12px 16px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111827;
+}
+
+#fabric-canvas {
+  display: block;
+}
+
+.studio-footer {
+  padding: 8px 16px 12px;
+  font-size: 0.72rem;
+  color: #64748b;
+}
