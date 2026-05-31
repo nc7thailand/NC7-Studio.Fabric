@@ -3,7 +3,11 @@ import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
 import { buildWorkAreaBed, isBedObject } from './WorkAreaBed';
-import { getFabricPlacementLimits } from './marginUtils';
+import {
+  clampAllFabricObjects,
+  clampFabricObjectPosition,
+  getFabricPlacementLimits,
+} from './marginUtils';
 import type { WorkAreaManager } from './WorkAreaManager';
 import { getSceneCanvas } from './sceneCanvas';
 import {
@@ -26,7 +30,7 @@ export class FabricCanvas {
   readonly canvas: Canvas;
   private readonly lab: LabOptions;
   private readonly manager: WorkAreaManager;
-  private readonly workArea: WorkAreaConfigState;
+  private workArea: WorkAreaConfigState;
   private readonly onDoubleClickObject?: () => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
@@ -67,6 +71,10 @@ export class FabricCanvas {
         this.onDoubleClickObject?.();
       }
     });
+    this.canvas.on('object:moving', (e) => this.onObjectTransform(e.target));
+    this.canvas.on('object:scaling', (e) => this.onObjectTransform(e.target));
+    this.canvas.on('object:rotating', (e) => this.onObjectTransform(e.target));
+    this.canvas.on('object:modified', (e) => this.onObjectTransform(e.target));
 
     this.drawBed();
     this.syncDimensions();
@@ -135,10 +143,46 @@ export class FabricCanvas {
     return getFabricPlacementLimits(this.workArea.margins, width, height);
   }
 
+  private shouldClamp(): boolean {
+    return this.lab.isEnabled('CORE-CLAMP');
+  }
+
+  private onObjectTransform(target?: FabricObject): void {
+    if (!target || !this.shouldClamp()) return;
+    if (isBedObject(target)) return;
+    if (target.type === 'activeSelection') return;
+    this.clampObjectInMargins(target);
+  }
+
+  private clampObjectInMargins(obj: FabricObject): void {
+    const limits = this.placementLimits();
+    const left = obj.left ?? 0;
+    const top = obj.top ?? 0;
+    const next = clampFabricObjectPosition(obj, left, top, limits);
+    obj.set({ left: next.left, top: next.top });
+    obj.setCoords();
+  }
+
+  applyWorkAreaConfig(state: WorkAreaConfigState): void {
+    this.workArea = {
+      ...state,
+      blockSize: { ...state.blockSize },
+      margins: { ...state.margins },
+    };
+    this.drawBed();
+    if (this.shouldClamp()) {
+      clampAllFabricObjects(this.existingUserObjects(), this.placementLimits());
+    }
+    this.canvas.requestRenderAll();
+  }
+
   async importSvg(svgText: string, name: string, maxMm?: number): Promise<void> {
     const obj = await fabricObjectFromSvg(svgText);
     if (maxMm != null) scaleToMaxMm(obj, maxMm);
     autoPlaceOnBed(obj, this.existingUserObjects(), this.placementLimits(), 10);
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(obj);
+    }
     const id = this.manager.newId();
     this.canvas.add(obj);
     this.manager.addObject({ id, name, fabricRef: obj });

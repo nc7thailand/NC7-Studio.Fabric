@@ -6,15 +6,19 @@ import {
   renderObjectPanel,
   renderSetupPanel,
   renderToolsPanel,
+  renderVectorizerPanel,
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
+import { vectorCore } from '../../modules/vectorizer/VectorCore';
 
 export class StudioShell {
   private root: HTMLElement;
   private openPanel: PanelId = null;
   private menuOpen = false;
   private canvas: CanvasViewportHandle | null = null;
+  private vectorizerLastResult: string | null = null;
+  private setupUnsub: (() => void) | null = null;
 
   constructor(private readonly mountSelector = '#app') {
     const el = document.querySelector(mountSelector);
@@ -27,7 +31,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 2c SVG import + sidebar sync — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 3 margin clamp, setup, vectorizer — port 3010');
   }
 
   private renderLayout(): string {
@@ -47,7 +51,12 @@ export class StudioShell {
 
         <section id="Pnl-Setup" class="floating-panel" role="dialog" aria-label="Material setup panel" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          ${renderSetupPanel()}
+          <div id="setup-panel-host">${renderSetupPanel()}</div>
+        </section>
+
+        <section id="Pnl-Vectorizer" class="floating-panel" role="dialog" aria-label="Trace image" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          <div id="vectorizer-panel-host">${renderVectorizerPanel(null)}</div>
         </section>
 
         <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
@@ -134,6 +143,13 @@ export class StudioShell {
 
     this.refreshFilePanel();
     this.updateSelectionUi();
+    this.bindSetupPanel();
+    this.refreshVectorizerPanel();
+
+    this.setupUnsub = workAreaConfig.subscribe(() => {
+      this.updateMaterialLabel();
+      if (this.openPanel === 'setup') this.refreshSetupPanel();
+    });
 
     this.root.querySelector('#btn-menu')?.addEventListener('click', () => {
       this.menuOpen = !this.menuOpen;
@@ -209,6 +225,7 @@ export class StudioShell {
       setup: '#Pnl-Setup',
       object: '#Pnl-Object',
       devlab: '#Pnl-DevLab',
+      vectorizer: '#Pnl-Vectorizer',
     };
 
     if (backdrop instanceof HTMLElement) {
@@ -221,6 +238,9 @@ export class StudioShell {
         el.hidden = this.openPanel !== key;
       }
     });
+
+    if (this.openPanel === 'setup') this.refreshSetupPanel();
+    if (this.openPanel === 'vectorizer') this.refreshVectorizerPanel();
 
     this.root.querySelector('#btn-file')?.classList.toggle('active', this.openPanel === 'file');
     this.root.querySelector('#btn-tools')?.classList.toggle('active', this.openPanel === 'tools');
@@ -271,6 +291,78 @@ export class StudioShell {
     host.innerHTML = renderObjectPanel(this.canvas?.getActiveObjectName() ?? null);
   }
 
+  private refreshSetupPanel(): void {
+    const host = this.root.querySelector('#setup-panel-host');
+    if (!(host instanceof HTMLElement)) return;
+    host.innerHTML = renderSetupPanel();
+    this.bindSetupPanel(host);
+  }
+
+  private bindSetupPanel(scope: ParentNode = this.root): void {
+    const parseNum = (id: string, fallback: number): number => {
+      const el = scope.querySelector(`#${id}`);
+      if (!(el instanceof HTMLInputElement)) return fallback;
+      const n = parseFloat(el.value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+
+    const applyFromInputs = (fitHome: boolean): void => {
+      const cfg = workAreaConfig.getState();
+      workAreaConfig.applySetup(
+        {
+          width: parseNum('setup-width', cfg.blockSize.width),
+          height: parseNum('setup-height', cfg.blockSize.height),
+        },
+        {
+          left: parseNum('setup-margin-left', cfg.margins.left),
+          right: parseNum('setup-margin-right', cfg.margins.right),
+          top: parseNum('setup-margin-top', cfg.margins.top),
+          bottom: parseNum('setup-margin-bottom', cfg.margins.bottom),
+        }
+      );
+      this.updateMaterialLabel();
+      if (fitHome) this.canvas?.resetView();
+    };
+
+    const onFieldChange = (): void => applyFromInputs(false);
+
+    scope.querySelectorAll(
+      '#setup-width, #setup-height, #setup-margin-left, #setup-margin-right, #setup-margin-top, #setup-margin-bottom'
+    ).forEach((el) => {
+      el.addEventListener('change', onFieldChange);
+    });
+
+    scope.querySelector('#btn-setup-apply-home')?.addEventListener('click', () => {
+      applyFromInputs(true);
+    });
+  }
+
+  private refreshVectorizerPanel(): void {
+    const host = this.root.querySelector('#vectorizer-panel-host');
+    if (!(host instanceof HTMLElement)) return;
+    host.innerHTML = renderVectorizerPanel(this.vectorizerLastResult);
+    this.bindVectorizerPanel(host);
+  }
+
+  private bindVectorizerPanel(scope: ParentNode): void {
+    scope.querySelector('#trace-image-upload')?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+      void (async () => {
+        const result = await vectorCore.traceImage(file);
+        this.vectorizerLastResult = result.summary;
+        this.refreshVectorizerPanel();
+      })();
+    });
+  }
+
+  private updateMaterialLabel(): void {
+    const el = this.root.querySelector('#material-info-label');
+    if (el) el.textContent = workAreaConfig.getMaterialLabel();
+  }
+
   private updateSelectionUi(): void {
     const badge = this.root.querySelector('#selection-badge');
     const nameEl = this.root.querySelector('#selection-name');
@@ -281,6 +373,8 @@ export class StudioShell {
   }
 
   destroy(): void {
+    this.setupUnsub?.();
+    this.setupUnsub = null;
     this.canvas?.dispose();
     this.canvas = null;
   }

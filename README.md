@@ -65,7 +65,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | CORE-SELECT | Single-click select | ✅ | ✅ |
 | CORE-UNDO | Undo stack | ✅ | ⬜ Phase 2+ |
 | CORE-NEST | Auto-nest | ✅ | ⬜ Phase 4+ |
-| CORE-CLAMP | Margin clamp | ✅ | ⬜ Phase 3+ |
+| CORE-CLAMP | Margin clamp | ✅ | ✅ Phase 3 |
 | **Clipboard** |
 | F-04 | Deep clone safety | ✅ | ⬜ |
 | F-01 | Duplicate + offset | ✅ | 🔶 +10px clone dot only |
@@ -86,12 +86,12 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | F-47 | Perimeter mm | ✅ | ⬜ |
 | F-53 | Loop count badge | ✅ | ⬜ |
 | **Handoff** |
-| F-50 | Auto-select after import | ✅ | ⬜ |
-| V-01 | VectorCore pipeline | ✅ `/vectorizer` | ⬜ Module 3 stub |
+| F-50 | Auto-select after import | ✅ | 🔶 stub handoff |
+| V-01 | VectorCore pipeline | ✅ `/vectorizer` | 🔶 Phase 3 stub UI |
 | **Studio shell** |
 | Load SVG / demo file | ✅ | ⬜ Phase 2 |
-| Foam bed + margins visual | ✅ | ⬜ Phase 3 |
-| Vectorizer → Studio route | ✅ | ⬜ Phase 3+ |
+| Foam bed + margins visual | ✅ | ✅ Phase 2b/3 |
+| Vectorizer → Studio route | ✅ | 🔶 Trace Image panel (stub) |
 | Feature Lab UI page | ✅ `/dev/canvas-features` | ⬜ Phase 2 |
 | Global history toolbar | ✅ | ⬜ Phase 2+ |
 
@@ -104,7 +104,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Repo | Role | Last known good |
 |------|------|-----------------|
 | `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 1 scaffold |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 3 |
 
 **GitHub repo name (suggested):** `NC7-Studio.Fabric`
 

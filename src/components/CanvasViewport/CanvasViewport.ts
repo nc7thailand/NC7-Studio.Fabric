@@ -1,4 +1,5 @@
 import { labOptions } from '../../modules/devlab/LabOptions';
+import { workAreaConfig, type WorkAreaConfigState } from '../../modules/config/WorkAreaConfig';
 import { workAreaManager, type WorkAreaManager } from '../../modules/canvas/WorkAreaManager';
 import { FabricCanvas } from '../../modules/canvas/FabricCanvas';
 
@@ -12,6 +13,7 @@ export interface CanvasViewportHandle {
   getObjectCount: () => number;
   getActiveObjectName: () => string | null;
   resetView: () => void;
+  applyWorkAreaConfig: (state: WorkAreaConfigState) => void;
   onSceneChange: (cb: () => void) => void;
   dispose: () => void;
 }
@@ -25,7 +27,12 @@ export function mountCanvasViewport(
   const fabric = new FabricCanvas(canvasEl, containerEl, {
     lab: labOptions,
     manager,
+    workArea: workAreaConfig.getState(),
     onDoubleClickObject: options?.onDoubleClickObject,
+  });
+
+  workAreaConfig.subscribe((state) => {
+    fabric.applyWorkAreaConfig(state);
   });
 
   const sceneCallbacks: Array<() => void> = [];
@@ -53,6 +60,7 @@ export function mountCanvasViewport(
     getObjectCount: () => fabric.getUserObjectCount(),
     getActiveObjectName: () => fabric.getActiveObjectName(),
     resetView: () => fabric.resetView(),
+    applyWorkAreaConfig: (state) => fabric.applyWorkAreaConfig(state),
     onSceneChange: (cb) => {
       sceneCallbacks.push(cb);
     },

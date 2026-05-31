@@ -532,6 +532,22 @@ body.dev-route {
   line-height: 1.4;
 }
 
+.vectorizer-result {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-input);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.vectorizer-result.is-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .mt-4 {
   margin-top: 16px;
 }
