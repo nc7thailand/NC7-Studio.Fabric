@@ -7,10 +7,12 @@ import {
   renderSetupPanel,
   renderToolsPanel,
   renderVectorizerPanel,
+  type ObjectPanelData,
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
 import { vectorCore } from '../../modules/vectorizer/VectorCore';
+import { labOptions } from '../../modules/devlab/LabOptions';
 
 export class StudioShell {
   private root: HTMLElement;
@@ -31,7 +33,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 3 margin clamp, setup, vectorizer — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 4 undo, auto-nest, CNC loop QA — port 3010');
   }
 
   private renderLayout(): string {
@@ -77,12 +79,13 @@ export class StudioShell {
           <div class="canvas-overlay-top">
             <div class="action-toolbar" role="toolbar" aria-label="Actions">
               <button type="button" id="btn-menu" class="action-btn" title="Menu" aria-label="Menu">${icons.menu}</button>
-              <button type="button" class="action-btn action-btn--undo is-disabled" disabled title="Undo (Phase 4)" aria-label="Undo">${icons.undo}</button>
+              <button type="button" id="btn-undo" class="action-btn action-btn--undo is-disabled" disabled title="Nothing to undo" aria-label="Undo">${icons.undo}</button>
+              <button type="button" id="btn-redo" class="action-btn action-btn--redo is-disabled" disabled title="Nothing to redo" aria-label="Redo">${icons.redo}</button>
               <div class="toolbar-nesting-group" role="group" aria-label="Auto nesting">
                 <label class="toolbar-gap-label" for="toolbar-nesting-gap">Gap</label>
-                <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" value="10.00" disabled aria-label="Nesting gap mm" />
+                <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" min="0" step="0.01" value="10.00" aria-label="Nesting gap mm" />
                 <span class="toolbar-gap-unit">mm</span>
-                <button type="button" class="action-btn action-btn--nest is-disabled" disabled title="Auto nest (Phase 4)" aria-label="Auto Nesting">${icons.nest}</button>
+                <button type="button" id="btn-nest" class="action-btn action-btn--nest is-disabled" disabled title="Auto nest (need 2+ objects)" aria-label="Auto Nesting">${icons.nest}</button>
               </div>
               <div id="action-menu" class="action-menu" role="menu" hidden>
                 <button type="button" class="action-menu-item" data-open-panel="file" role="menuitem">File</button>
@@ -111,6 +114,7 @@ export class StudioShell {
             <div class="selection-badge" id="selection-badge" hidden>
               <span class="pulse-dot"></span>
               <span id="selection-name">Selected</span>
+              <span id="selection-loop-count" class="selection-loop-count" hidden></span>
             </div>
           </div>
         </div>
@@ -137,12 +141,24 @@ export class StudioShell {
 
     this.canvas.onSceneChange(() => {
       this.updateSelectionUi();
+      this.updateToolbarUi();
       this.refreshFilePanel();
+      this.refreshObjectPanel();
+    });
+
+    this.canvas.onHistoryChange(() => {
+      this.updateToolbarUi();
+    });
+
+    labOptions.subscribe(() => {
+      this.updateToolbarUi();
+      this.updateSelectionUi();
       this.refreshObjectPanel();
     });
 
     this.refreshFilePanel();
     this.updateSelectionUi();
+    this.updateToolbarUi();
     this.bindSetupPanel();
     this.refreshVectorizerPanel();
 
@@ -170,6 +186,22 @@ export class StudioShell {
       this.canvas?.resetView();
     });
 
+    this.root.querySelector('#btn-undo')?.addEventListener('click', () => {
+      void this.canvas?.undo();
+    });
+
+    this.root.querySelector('#btn-redo')?.addEventListener('click', () => {
+      void this.canvas?.redo();
+    });
+
+    this.root.querySelector('#btn-nest')?.addEventListener('click', () => {
+      const gap = this.readNestingGap();
+      const result = this.canvas?.runAutoNesting(gap);
+      if (result && !result.ok && result.reason) {
+        console.warn('[StudioShell] auto-nest:', result.reason);
+      }
+    });
+
     this.root.querySelector('#panel-backdrop')?.addEventListener('click', () => this.closePanels());
 
     this.root.querySelectorAll('[data-close-panel]').forEach((el) => {
@@ -180,6 +212,30 @@ export class StudioShell {
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.closePanels();
+
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+
+      if (e.key === 'z' && !e.shiftKey && labOptions.isEnabled('CORE-UNDO')) {
+        e.preventDefault();
+        void this.canvas?.undo();
+      }
+      if (
+        (e.key === 'z' && e.shiftKey && labOptions.isEnabled('F-32')) ||
+        (e.key === 'y' && labOptions.isEnabled('F-32'))
+      ) {
+        if (!labOptions.isEnabled('CORE-UNDO')) return;
+        e.preventDefault();
+        void this.canvas?.redo();
+      }
     });
 
     this.syncMenuUi();
@@ -285,10 +341,72 @@ export class StudioShell {
     });
   }
 
+  private readNestingGap(): number {
+    const el = this.root.querySelector('#toolbar-nesting-gap');
+    if (!(el instanceof HTMLInputElement)) return 10;
+    const n = parseFloat(el.value);
+    return Number.isFinite(n) && n >= 0 ? n : 10;
+  }
+
+  private updateToolbarUi(): void {
+    if (!this.canvas) return;
+    const history = this.canvas.getHistoryState();
+    const objectCount = this.canvas.getObjectCount();
+    const undoEnabled = history.canUndo && labOptions.isEnabled('CORE-UNDO');
+    const redoEnabled =
+      history.canRedo && labOptions.isEnabled('CORE-UNDO') && labOptions.isEnabled('F-32');
+    const nestEnabled =
+      objectCount >= 2 && labOptions.isEnabled('CORE-NEST');
+
+    const undoBtn = this.root.querySelector('#btn-undo');
+    if (undoBtn instanceof HTMLButtonElement) {
+      undoBtn.disabled = !undoEnabled;
+      undoBtn.classList.toggle('is-disabled', !undoEnabled);
+      undoBtn.title = undoEnabled ? history.label : 'Nothing to undo';
+    }
+
+    const redoBtn = this.root.querySelector('#btn-redo');
+    if (redoBtn instanceof HTMLButtonElement) {
+      redoBtn.disabled = !redoEnabled;
+      redoBtn.classList.toggle('is-disabled', !redoEnabled);
+      redoBtn.title = redoEnabled ? history.redoLabel : 'Nothing to redo';
+    }
+
+    const nestBtn = this.root.querySelector('#btn-nest');
+    if (nestBtn instanceof HTMLButtonElement) {
+      nestBtn.disabled = !nestEnabled;
+      nestBtn.classList.toggle('is-disabled', !nestEnabled);
+      nestBtn.title = nestEnabled
+        ? `Auto nest ${objectCount} objects`
+        : objectCount < 2
+          ? 'Auto nest (need 2+ objects)'
+          : 'Auto nest disabled in Feature Lab';
+    }
+
+    const gapInput = this.root.querySelector('#toolbar-nesting-gap');
+    if (gapInput instanceof HTMLInputElement) {
+      gapInput.disabled = !labOptions.isEnabled('CORE-NEST');
+    }
+  }
+
+  private getObjectPanelData(): ObjectPanelData | null {
+    if (!this.canvas) return null;
+    const name = this.canvas.getActiveObjectName();
+    if (!name) return null;
+    const metrics = this.canvas.getSelectedLoopMetrics();
+    return {
+      name,
+      loops: metrics.loops,
+      totalPerimeterMm: metrics.totalPerimeterMm,
+      showLoops: labOptions.isEnabled('F-40'),
+      showPerimeter: labOptions.isEnabled('F-47'),
+    };
+  }
+
   private refreshObjectPanel(): void {
     const host = this.root.querySelector('#object-panel-host');
     if (!(host instanceof HTMLElement)) return;
-    host.innerHTML = renderObjectPanel(this.canvas?.getActiveObjectName() ?? null);
+    host.innerHTML = renderObjectPanel(this.getObjectPanelData());
   }
 
   private refreshSetupPanel(): void {
@@ -366,10 +484,21 @@ export class StudioShell {
   private updateSelectionUi(): void {
     const badge = this.root.querySelector('#selection-badge');
     const nameEl = this.root.querySelector('#selection-name');
+    const loopEl = this.root.querySelector('#selection-loop-count');
     const name = this.canvas?.getActiveObjectName();
+    const metrics = this.canvas?.getSelectedLoopMetrics();
 
     if (badge instanceof HTMLElement) badge.hidden = !name;
     if (nameEl && name) nameEl.textContent = name;
+
+    if (loopEl instanceof HTMLElement) {
+      const showLoopBadge =
+        !!name && labOptions.isEnabled('F-53') && (metrics?.count ?? 0) > 0;
+      loopEl.hidden = !showLoopBadge;
+      if (showLoopBadge && metrics) {
+        loopEl.textContent = ` · ${metrics.count} loop${metrics.count === 1 ? '' : 's'}`;
+      }
+    }
   }
 
   destroy(): void {

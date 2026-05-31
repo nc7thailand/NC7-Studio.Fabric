@@ -63,8 +63,8 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | CORE-MOVE | Move object | ✅ | ✅ Fabric native |
 | CORE-RESIZE | Resize handles | ✅ | ✅ Fabric native |
 | CORE-SELECT | Single-click select | ✅ | ✅ |
-| CORE-UNDO | Undo stack | ✅ | ⬜ Phase 2+ |
-| CORE-NEST | Auto-nest | ✅ | ⬜ Phase 4+ |
+| CORE-UNDO | Undo stack | ✅ | ✅ Phase 4 |
+| CORE-NEST | Auto-nest | ✅ | ✅ Phase 4 |
 | CORE-CLAMP | Margin clamp | ✅ | ✅ Phase 3 |
 | **Clipboard** |
 | F-04 | Deep clone safety | ✅ | ⬜ |
@@ -79,12 +79,12 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | F-21 | Rotate handle | ✅ | 🔶 Fabric mtr (default) |
 | F-22 | Bbox action dots | ✅ | ✅ |
 | F-31 | Transform commit + HUD | ✅ | ⬜ |
-| F-32 | Redo | ✅ | ⬜ |
+| F-32 | Redo | ✅ | ✅ Phase 4 |
 | F-33 | 1:1 transform tracking | ✅ | ✅ native Fabric |
 | **Display / CNC QA** |
-| F-40 | Loop list | ✅ | ⬜ |
-| F-47 | Perimeter mm | ✅ | ⬜ |
-| F-53 | Loop count badge | ✅ | ⬜ |
+| F-40 | Loop list | ✅ | ✅ Phase 4 |
+| F-47 | Perimeter mm | ✅ | ✅ Phase 4 |
+| F-53 | Loop count badge | ✅ | ✅ Phase 4 |
 | **Handoff** |
 | F-50 | Auto-select after import | ✅ | 🔶 stub handoff |
 | V-01 | VectorCore pipeline | ✅ `/vectorizer` | 🔶 Phase 3 stub UI |
@@ -93,7 +93,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Foam bed + margins visual | ✅ | ✅ Phase 2b/3 |
 | Vectorizer → Studio route | ✅ | 🔶 Trace Image panel (stub) |
 | Feature Lab UI page | ✅ `/dev/canvas-features` | ⬜ Phase 2 |
-| Global history toolbar | ✅ | ⬜ Phase 2+ |
+| Global history toolbar | ✅ | ✅ Phase 4 |
 
 **Legend:** ✅ done · 🔶 partial · ⬜ not started
 
@@ -104,7 +104,7 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Repo | Role | Last known good |
 |------|------|-----------------|
 | `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 3 |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 4 |
 
 **GitHub repo name (suggested):** `NC7-Studio.Fabric`
 
@@ -124,5 +124,5 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 
 1. **Phase 2** — Dev Lab UI, sidebar object list sync, load SVG  
 2. **Phase 3** — Foam bed margins, VectorCore port, vectorizer handoff  
-3. **Phase 4** — Undo/history, auto-nest, CNC loop QA  
+3. **Phase 4** — Undo/history, auto-nest, CNC loop QA ✅
 4. **Cutover** — BK sign-off at checklist 100%

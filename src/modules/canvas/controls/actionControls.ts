@@ -11,9 +11,12 @@ export function deleteObject(
   const canvas = getSceneCanvas(target.canvas);
   if (!canvas) return true;
   const sceneId = target.get('sceneId') as string | undefined;
+  const mgr = canvas.workAreaManager;
+  const scene = sceneId && mgr ? mgr.findById(sceneId) : mgr?.findByFabric(target);
+  if (scene) canvas.historyHooks?.recordDelete(scene);
   canvas.remove(target);
-  if (sceneId && canvas.workAreaManager) {
-    canvas.workAreaManager.removeObject(sceneId);
+  if (sceneId && mgr) {
+    mgr.removeObject(sceneId);
   }
   canvas.requestRenderAll();
   return true;
@@ -48,8 +51,10 @@ export function cloneObject(
       cloned.set('sceneId', id);
       cloned.set('sceneName', name);
       if (mgr) {
-        mgr.addObject({ id, name, fabricRef: cloned });
+        const scene = { id, name, fabricRef: cloned };
+        mgr.addObject(scene);
         mgr.selectObject(id);
+        canvas.historyHooks?.recordAdd(scene);
       }
 
       canvas.setActiveObject(cloned);

@@ -1,4 +1,4 @@
-import { Canvas, Rect, type FabricObject, type Group } from 'fabric';
+import { Canvas, Rect, util, type FabricObject, type Group } from 'fabric';
 import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
@@ -15,6 +15,18 @@ import {
   fabricObjectFromSvg,
   scaleToMaxMm,
 } from '../svg/svgImport';
+import {
+  globalHistory,
+  type HistoryAdapter,
+  type HistoryState,
+} from '../history/GlobalHistoryStack';
+import {
+  buildFabricTransformState,
+  transformStatesEqual,
+  type FabricTransformState,
+} from '../history/transformSnapshot';
+import { countObjectLoops, getLoopSummary, totalPerimeterMm } from './loopMetrics';
+import type { LoopInfo } from './loopMetrics';
 
 export interface FabricCanvasOptions {
   lab: LabOptions;
@@ -22,6 +34,7 @@ export interface FabricCanvasOptions {
   backgroundColor?: string;
   workArea?: WorkAreaConfigState;
   onDoubleClickObject?: () => void;
+  onHistoryChange?: (state: HistoryState) => void;
 }
 
 const DEMO_SIZES_MM = [180, 140, 220, 120, 160];
@@ -32,10 +45,15 @@ export class FabricCanvas {
   private readonly manager: WorkAreaManager;
   private workArea: WorkAreaConfigState;
   private readonly onDoubleClickObject?: () => void;
+  private readonly onHistoryChange?: (state: HistoryState) => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
   private syncingSelection = false;
+  private suppressHistory = false;
+  private interactionSnapshot: FabricTransformState | null = null;
+  private lastInteractionType: 'move' | 'resize' | 'rotate' = 'move';
+  private historyUnsub: (() => void) | null = null;
 
   constructor(
     private readonly canvasEl: HTMLCanvasElement,
@@ -46,9 +64,10 @@ export class FabricCanvas {
     this.manager = options.manager;
     this.workArea = options.workArea ?? workAreaConfig.getState();
     this.onDoubleClickObject = options.onDoubleClickObject;
+    this.onHistoryChange = options.onHistoryChange;
 
     if (!iconsReady()) {
-      console.warn('[FabricCanvas] action icons not preloaded');
+      console.warn('[FabricCanvas] action icons not preload');
     }
 
     this.canvas = new Canvas(canvasEl, {
@@ -58,7 +77,13 @@ export class FabricCanvas {
     });
 
     const sceneCanvas = getSceneCanvas(this.canvas);
-    if (sceneCanvas) sceneCanvas.workAreaManager = this.manager;
+    if (sceneCanvas) {
+      sceneCanvas.workAreaManager = this.manager;
+      sceneCanvas.historyHooks = {
+        recordAdd: (scene) => this.recordAdd(scene),
+        recordDelete: (scene) => this.recordDelete(scene),
+      };
+    }
 
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
     this.manager.subscribe(() => this.onManagerChange());
@@ -71,10 +96,27 @@ export class FabricCanvas {
         this.onDoubleClickObject?.();
       }
     });
-    this.canvas.on('object:moving', (e) => this.onObjectTransform(e.target));
-    this.canvas.on('object:scaling', (e) => this.onObjectTransform(e.target));
-    this.canvas.on('object:rotating', (e) => this.onObjectTransform(e.target));
-    this.canvas.on('object:modified', (e) => this.onObjectTransform(e.target));
+    this.canvas.on('mouse:down', (e) => this.onInteractionBegin(e.target));
+    this.canvas.on('object:moving', (e) => {
+      this.lastInteractionType = 'move';
+      this.onObjectTransformDuring(e.target);
+    });
+    this.canvas.on('object:scaling', (e) => {
+      this.lastInteractionType = 'resize';
+      this.onObjectTransformDuring(e.target);
+    });
+    this.canvas.on('object:rotating', (e) => {
+      this.lastInteractionType = 'rotate';
+      this.onObjectTransformDuring(e.target);
+    });
+    this.canvas.on('object:modified', (e) => {
+      this.onObjectTransformDuring(e.target);
+      this.finalizeInteraction(e.target);
+    });
+
+    this.historyUnsub = globalHistory.subscribe((state) => {
+      this.onHistoryChange?.(state);
+    });
 
     this.drawBed();
     this.syncDimensions();
@@ -90,6 +132,144 @@ export class FabricCanvas {
     this.syncDimensions();
     this.fitBedInView();
   };
+
+  private historyAdapter(): HistoryAdapter {
+    return {
+      restoreObjectState: (id, state) => {
+        this.withoutHistory(() => {
+          this.manager.restoreObjectState(id, state, this.workArea);
+          this.canvas.requestRenderAll();
+        });
+      },
+      removeObject: (id) => {
+        this.withoutHistory(() => this.removeSceneObject(id, false));
+      },
+      restoreDeletedObject: async (entry) => {
+        await this.withoutHistoryAsync(async () => {
+          const objects = await util.enlivenObjects<FabricObject>([entry.fabricJson]);
+          const obj = objects[0];
+          if (!obj) return;
+          obj.set({ sceneId: entry.id, sceneName: entry.name });
+          if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+          this.canvas.add(obj);
+          this.manager.addObject({ id: entry.id, name: entry.name, fabricRef: obj });
+          this.canvas.setActiveObject(obj);
+          this.canvas.requestRenderAll();
+        });
+      },
+      restoreAddedObject: async (entry) => {
+        await this.withoutHistoryAsync(async () => {
+          const objects = await util.enlivenObjects<FabricObject>([entry.fabricJson]);
+          const obj = objects[0];
+          if (!obj) return;
+          obj.set({ sceneId: entry.id, sceneName: entry.name });
+          if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+          this.canvas.add(obj);
+          this.manager.addObject({ id: entry.id, name: entry.name, fabricRef: obj });
+          this.canvas.setActiveObject(obj);
+          this.canvas.requestRenderAll();
+        });
+      },
+      selectObject: (id) => {
+        this.manager.selectObject(id);
+      },
+    };
+  }
+
+  private withoutHistory(fn: () => void): void {
+    this.suppressHistory = true;
+    try {
+      fn();
+    } finally {
+      this.suppressHistory = false;
+    }
+  }
+
+  private async withoutHistoryAsync(fn: () => Promise<void>): Promise<void> {
+    this.suppressHistory = true;
+    try {
+      await fn();
+    } finally {
+      this.suppressHistory = false;
+    }
+  }
+
+  private shouldRecordHistory(): boolean {
+    return !this.suppressHistory && this.lab.isEnabled('CORE-UNDO');
+  }
+
+  private recordAdd(scene: { id: string; name: string; fabricRef: FabricObject }): void {
+    if (!this.shouldRecordHistory()) return;
+    globalHistory.recordAdd(scene);
+  }
+
+  private recordDelete(scene: { id: string; name: string; fabricRef: FabricObject }): void {
+    if (!this.shouldRecordHistory()) return;
+    globalHistory.recordDelete(scene);
+  }
+
+  private onInteractionBegin(target?: FabricObject): void {
+    if (!target || isBedObject(target) || target.type === 'activeSelection') return;
+    this.interactionSnapshot = buildFabricTransformState(target);
+  }
+
+  private finalizeInteraction(target?: FabricObject): void {
+    const snapshot = this.interactionSnapshot;
+    this.interactionSnapshot = null;
+    if (!target || isBedObject(target) || target.type === 'activeSelection') return;
+    if (!snapshot || !this.shouldRecordHistory()) return;
+
+    const scene = this.manager.findByFabric(target);
+    if (!scene) return;
+
+    const after = buildFabricTransformState(target);
+    if (transformStatesEqual(snapshot, after)) return;
+
+    globalHistory.recordTransform({
+      type: this.lastInteractionType,
+      objectId: scene.id,
+      before: snapshot,
+      after,
+    });
+  }
+
+  async undo(): Promise<boolean> {
+    if (!this.lab.isEnabled('CORE-UNDO')) return false;
+    return globalHistory.undo(this.historyAdapter());
+  }
+
+  async redo(): Promise<boolean> {
+    if (!this.lab.isEnabled('CORE-UNDO') || !this.lab.isEnabled('F-32')) return false;
+    return globalHistory.redo(this.historyAdapter());
+  }
+
+  getHistoryState(): HistoryState {
+    return globalHistory.getState();
+  }
+
+  runAutoNesting(gap: number): { ok: boolean; reason?: string; placed?: number } {
+    const result = this.manager.runAutoNesting(gap, this.workArea);
+    if (result.ok) this.canvas.requestRenderAll();
+    return result;
+  }
+
+  getSelectedLoopMetrics(): {
+    count: number;
+    loops: LoopInfo[];
+    totalPerimeterMm: number;
+  } {
+    const scene = this.manager.getSelected();
+    const obj = scene?.fabricRef ?? null;
+    const includePerimeter = this.lab.isEnabled('F-47');
+    const loops =
+      this.lab.isEnabled('F-40') && obj ? getLoopSummary(obj, includePerimeter) : [];
+    const count = this.lab.isEnabled('F-53') && obj ? countObjectLoops(obj) : 0;
+    return {
+      count,
+      loops,
+      totalPerimeterMm: includePerimeter && obj ? totalPerimeterMm(obj) : 0,
+    };
+  }
 
   private onCanvasSelection(target?: FabricObject): void {
     if (this.syncingSelection) return;
@@ -147,7 +327,7 @@ export class FabricCanvas {
     return this.lab.isEnabled('CORE-CLAMP');
   }
 
-  private onObjectTransform(target?: FabricObject): void {
+  private onObjectTransformDuring(target?: FabricObject): void {
     if (!target || !this.shouldClamp()) return;
     if (isBedObject(target)) return;
     if (target.type === 'activeSelection') return;
@@ -185,7 +365,9 @@ export class FabricCanvas {
     }
     const id = this.manager.newId();
     this.canvas.add(obj);
-    this.manager.addObject({ id, name, fabricRef: obj });
+    const scene = { id, name, fabricRef: obj };
+    this.manager.addObject(scene);
+    this.recordAdd(scene);
     this.manager.selectObject(id);
     this.canvas.setActiveObject(obj);
     this.canvas.requestRenderAll();
@@ -203,9 +385,11 @@ export class FabricCanvas {
     const res = await fetch('/demo.svg');
     if (!res.ok) return;
     const text = await res.text();
-    for (let i = 0; i < DEMO_SIZES_MM.length; i += 1) {
-      await this.importSvg(text, `demo-${i + 1}.svg`, DEMO_SIZES_MM[i]);
-    }
+    await this.withoutHistoryAsync(async () => {
+      for (let i = 0; i < DEMO_SIZES_MM.length; i += 1) {
+        await this.importSvg(text, `demo-${i + 1}.svg`, DEMO_SIZES_MM[i]);
+      }
+    });
   }
 
   syncDimensions = (): void => {
@@ -248,16 +432,19 @@ export class FabricCanvas {
 
     const id = this.manager.newId();
     this.canvas.add(rect);
-    this.manager.addObject({ id, name: `rect-${this.rectCount}.svg`, fabricRef: rect });
+    const scene = { id, name: `rect-${this.rectCount}.svg`, fabricRef: rect };
+    this.manager.addObject(scene);
+    this.recordAdd(scene);
     this.manager.selectObject(id);
     this.canvas.setActiveObject(rect);
     this.canvas.requestRenderAll();
     return rect;
   }
 
-  removeSceneObject(id: string): void {
+  removeSceneObject(id: string, recordHistory = true): void {
     const scene = this.manager.findById(id);
     if (!scene) return;
+    if (recordHistory) this.recordDelete(scene);
     this.canvas.remove(scene.fabricRef);
     this.manager.removeObject(id);
     this.canvas.requestRenderAll();
@@ -279,6 +466,7 @@ export class FabricCanvas {
   dispose(): void {
     window.removeEventListener('resize', this.onWindowResize);
     this.resizeObserver?.disconnect();
+    this.historyUnsub?.();
     this.canvas.dispose();
   }
 }

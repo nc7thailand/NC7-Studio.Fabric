@@ -952,6 +952,22 @@ body.dev-route {
   border-color: rgba(245, 158, 11, 0.35);
 }
 
+.action-btn--redo.is-disabled,
+.action-btn--redo:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.action-btn--redo:not(:disabled):not(.is-disabled) {
+  color: #fbbf24;
+}
+
+.action-btn--redo:not(:disabled):not(.is-disabled):hover {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 .toolbar-nesting-group {
   display: inline-flex;
   align-items: center;

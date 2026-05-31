@@ -1,6 +1,15 @@
 import { icons } from '../StudioShell/toolbarIcons';
 import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
+import type { LoopInfo } from '../../modules/canvas/loopMetrics';
+
+export interface ObjectPanelData {
+  name: string;
+  loops: LoopInfo[];
+  totalPerimeterMm: number;
+  showLoops: boolean;
+  showPerimeter: boolean;
+}
 
 export function renderFileSidebar(
   objects: SceneObject[],
@@ -33,7 +42,7 @@ export function renderFileSidebar(
     <aside class="panel-sidebar">
       <div class="sidebar-header">
         <h1 class="logo-text">NC7 Studio<span class="logo-accent">.Fabric</span></h1>
-        <span class="version-tag">Phase 3 · clamp + setup</span>
+        <span class="version-tag">Phase 4 · undo + nest</span>
       </div>
       <div class="tabs-nav">
         <button type="button" class="tab-btn active" data-tab="files">
@@ -164,15 +173,56 @@ export function renderVectorizerPanel(lastResult: string | null): string {
   `;
 }
 
-export function renderObjectPanel(selectedName: string | null): string {
+export function renderObjectPanel(data: ObjectPanelData | null): string {
+  if (!data) {
+    return `
+    <div class="tools-panel">
+      <h3 class="tools-panel-title">Object Properties</h3>
+      <div class="object-props">
+        <p class="section-hint">Select an object on the canvas to inspect loops and perimeter.</p>
+      </div>
+    </div>`;
+  }
+
+  const loopSection =
+    data.showLoops && data.loops.length > 0
+      ? `<div class="object-props-loops">
+          <span class="object-props-label">Cut loops (${data.loops.length})</span>
+          <ul class="object-props-loop-list">
+            ${data.loops
+              .map(
+                (loop) => `<li>
+              Loop ${loop.index + 1}: ${loop.pointCount} pts${
+                data.showPerimeter && loop.perimeterMm != null
+                  ? ` · ${loop.perimeterMm.toFixed(1)} mm`
+                  : ''
+              }
+            </li>`
+              )
+              .join('')}
+          </ul>
+          ${
+            data.showPerimeter && data.totalPerimeterMm > 0
+              ? `<div class="object-props-row">
+              <span class="object-props-label">Total perimeter</span>
+              <span class="object-props-value">${data.totalPerimeterMm.toFixed(1)} mm</span>
+            </div>`
+              : ''
+          }
+        </div>`
+      : data.showLoops
+        ? `<p class="section-hint">No path loops detected on this object.</p>`
+        : '';
+
   return `
     <div class="tools-panel">
       <h3 class="tools-panel-title">Object Properties</h3>
       <div class="object-props">
         <div class="object-props-row">
           <span class="object-props-label">Name</span>
-          <span class="object-props-value">${selectedName ?? '—'}</span>
+          <span class="object-props-value">${data.name}</span>
         </div>
+        ${loopSection}
       </div>
     </div>
   `;
