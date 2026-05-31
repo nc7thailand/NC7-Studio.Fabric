@@ -7,6 +7,7 @@ import {
   renderSetupPanel,
   renderToolsPanel,
 } from '../Sidebar/SidebarPanel';
+import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
 
 export class StudioShell {
@@ -26,7 +27,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 2b work area bed — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 2c SVG import + sidebar sync — port 3010');
   }
 
   private renderLayout(): string {
@@ -41,7 +42,7 @@ export class StudioShell {
 
         <section id="Pnl-Tools" class="floating-panel floating-panel--small" role="dialog" aria-label="Tools panel" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          ${renderToolsPanel()}
+          <div id="tools-panel-host">${renderToolsPanel()}</div>
         </section>
 
         <section id="Pnl-Setup" class="floating-panel" role="dialog" aria-label="Material setup panel" hidden>
@@ -51,7 +52,12 @@ export class StudioShell {
 
         <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          ${renderObjectPanel()}
+          <div id="object-panel-host">${renderObjectPanel(null)}</div>
+        </section>
+
+        <section id="Pnl-DevLab" class="floating-panel floating-panel--small" role="dialog" aria-label="Dev Lab" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          <div id="devlab-panel-host">${renderDevLabPanel()}</div>
         </section>
 
         <div class="canvas-wrapper">
@@ -62,7 +68,7 @@ export class StudioShell {
           <div class="canvas-overlay-top">
             <div class="action-toolbar" role="toolbar" aria-label="Actions">
               <button type="button" id="btn-menu" class="action-btn" title="Menu" aria-label="Menu">${icons.menu}</button>
-              <button type="button" class="action-btn action-btn--undo is-disabled" disabled title="Undo (Phase 2)" aria-label="Undo">${icons.undo}</button>
+              <button type="button" class="action-btn action-btn--undo is-disabled" disabled title="Undo (Phase 4)" aria-label="Undo">${icons.undo}</button>
               <div class="toolbar-nesting-group" role="group" aria-label="Auto nesting">
                 <label class="toolbar-gap-label" for="toolbar-nesting-gap">Gap</label>
                 <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" value="10.00" disabled aria-label="Nesting gap mm" />
@@ -91,7 +97,7 @@ export class StudioShell {
               <span class="hint-divider">|</span>
               <div class="hint-item"><span>Green + clone · Red × delete</span></div>
               <span class="hint-divider">|</span>
-              <div class="hint-item"><span>Double-click object: Properties (soon)</span></div>
+              <div class="hint-item"><span>Double-click object: Properties</span></div>
             </div>
             <div class="selection-badge" id="selection-badge" hidden>
               <span class="pulse-dot"></span>
@@ -110,15 +116,24 @@ export class StudioShell {
       throw new Error('StudioShell: canvas mount missing');
     }
 
-    this.canvas = mountCanvasViewport(mountEl, canvasEl);
-    this.refreshFilePanel();
-    this.canvas.addRectangle();
-    this.updateSelectionUi();
+    this.canvas = mountCanvasViewport(mountEl, canvasEl, {
+      onDoubleClickObject: () => {
+        this.openPanel = 'object';
+        this.syncPanelsUi();
+        this.refreshObjectPanel();
+      },
+    });
 
-    this.canvas.onSelectionChange(() => {
+    bindDevLabPanel(this.root);
+
+    this.canvas.onSceneChange(() => {
       this.updateSelectionUi();
       this.refreshFilePanel();
+      this.refreshObjectPanel();
     });
+
+    this.refreshFilePanel();
+    this.updateSelectionUi();
 
     this.root.querySelector('#btn-menu')?.addEventListener('click', () => {
       this.menuOpen = !this.menuOpen;
@@ -145,15 +160,18 @@ export class StudioShell {
       el.addEventListener('click', () => this.closePanels());
     });
 
-    this.root.querySelectorAll('[data-open-panel]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const id = el.getAttribute('data-open-panel') as PanelId;
-        if (id) this.openPanel = id;
-        this.syncPanelsUi();
-      });
+    this.bindPanelOpeners(this.root);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.closePanels();
     });
 
-    this.root.querySelectorAll('.action-menu-item[data-open-panel]').forEach((el) => {
+    this.syncMenuUi();
+    this.syncPanelsUi();
+  }
+
+  private bindPanelOpeners(scope: ParentNode): void {
+    scope.querySelectorAll('[data-open-panel]').forEach((el) => {
       el.addEventListener('click', () => {
         this.menuOpen = false;
         const id = el.getAttribute('data-open-panel') as PanelId;
@@ -162,21 +180,6 @@ export class StudioShell {
         this.syncMenuUi();
       });
     });
-
-    this.root.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      if (target.id === 'btn-load-demo-sidebar') {
-        this.canvas?.addRectangle();
-        this.refreshFilePanel();
-      }
-    });
-
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.closePanels();
-    });
-
-    this.syncMenuUi();
-    this.syncPanelsUi();
   }
 
   private togglePanel(id: PanelId): void {
@@ -205,6 +208,7 @@ export class StudioShell {
       tools: '#Pnl-Tools',
       setup: '#Pnl-Setup',
       object: '#Pnl-Object',
+      devlab: '#Pnl-DevLab',
     };
 
     if (backdrop instanceof HTMLElement) {
@@ -225,24 +229,55 @@ export class StudioShell {
   private refreshFilePanel(): void {
     const host = this.root.querySelector('#file-panel-host');
     if (!(host instanceof HTMLElement) || !this.canvas) return;
-    const count = this.canvas.getObjectCount();
-    host.innerHTML = renderFileSidebar(count);
+
+    const mgr = this.canvas.manager;
+    host.innerHTML = renderFileSidebar(mgr.objects, mgr.selectedObjectId);
 
     host.querySelector('#btn-load-demo-sidebar')?.addEventListener('click', () => {
-      this.canvas?.addRectangle();
-      this.refreshFilePanel();
+      void this.canvas?.loadDemoSvg();
     });
+
+    host.querySelector('#svg-upload')?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const files = input.files ? Array.from(input.files) : [];
+      void (async () => {
+        for (const file of files) {
+          if (!file.name.toLowerCase().endsWith('.svg')) continue;
+          await this.canvas?.importSvgFile(file);
+        }
+        input.value = '';
+      })();
+    });
+
+    host.querySelectorAll('[data-select-id]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-select-id');
+        if (id) this.canvas?.selectObject(id);
+      });
+    });
+
+    host.querySelectorAll('[data-delete-id]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = el.getAttribute('data-delete-id');
+        if (id) this.canvas?.removeObject(id);
+      });
+    });
+  }
+
+  private refreshObjectPanel(): void {
+    const host = this.root.querySelector('#object-panel-host');
+    if (!(host instanceof HTMLElement)) return;
+    host.innerHTML = renderObjectPanel(this.canvas?.getActiveObjectName() ?? null);
   }
 
   private updateSelectionUi(): void {
     const badge = this.root.querySelector('#selection-badge');
     const nameEl = this.root.querySelector('#selection-name');
-    const propType = this.root.querySelector('#obj-prop-type');
     const name = this.canvas?.getActiveObjectName();
 
     if (badge instanceof HTMLElement) badge.hidden = !name;
-    if (nameEl && name) nameEl.textContent = `Selected: ${name}`;
-    if (propType) propType.textContent = name ?? '—';
+    if (nameEl && name) nameEl.textContent = name;
   }
 
   destroy(): void {

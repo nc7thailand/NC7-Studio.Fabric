@@ -1,4 +1,5 @@
 import { Control, util, type FabricObject, type TPointerEvent, type Transform } from 'fabric';
+import { getSceneCanvas } from '../sceneCanvas';
 import { cloneIcon, CONTROL_SIZE, deleteIcon } from './icons';
 import { renderIcon } from './renderIcon';
 
@@ -7,9 +8,13 @@ export function deleteObject(
   transform: Transform
 ): boolean {
   const target = transform.target;
-  const canvas = target.canvas;
+  const canvas = getSceneCanvas(target.canvas);
   if (!canvas) return true;
+  const sceneId = target.get('sceneId') as string | undefined;
   canvas.remove(target);
+  if (sceneId && canvas.workAreaManager) {
+    canvas.workAreaManager.removeObject(sceneId);
+  }
   canvas.requestRenderAll();
   return true;
 }
@@ -20,7 +25,7 @@ export function cloneObject(
   transform: Transform
 ): boolean {
   const target = transform.target;
-  const canvas = target.canvas;
+  const canvas = getSceneCanvas(target.canvas);
   if (!canvas) return true;
 
   void target
@@ -32,6 +37,21 @@ export function cloneObject(
         evented: true,
       });
       canvas.add(cloned);
+      attachActionControls(cloned);
+
+      const mgr = canvas.workAreaManager;
+      const src = mgr?.findByFabric(target);
+      const name = src
+        ? `${src.name.replace(/\.svg$/i, '')} copy.svg`
+        : `copy-${Date.now()}.svg`;
+      const id = mgr?.newId() ?? `${Date.now()}`;
+      cloned.set('sceneId', id);
+      cloned.set('sceneName', name);
+      if (mgr) {
+        mgr.addObject({ id, name, fabricRef: cloned });
+        mgr.selectObject(id);
+      }
+
       canvas.setActiveObject(cloned);
       canvas.requestRenderAll();
     })

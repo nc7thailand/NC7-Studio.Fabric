@@ -3,20 +3,35 @@ import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
 import { buildWorkAreaBed, isBedObject } from './WorkAreaBed';
+import { getFabricPlacementLimits } from './marginUtils';
+import type { WorkAreaManager } from './WorkAreaManager';
+import { getSceneCanvas } from './sceneCanvas';
+import {
+  autoPlaceOnBed,
+  fabricObjectFromSvg,
+  scaleToMaxMm,
+} from '../svg/svgImport';
 
 export interface FabricCanvasOptions {
   lab: LabOptions;
+  manager: WorkAreaManager;
   backgroundColor?: string;
   workArea?: WorkAreaConfigState;
+  onDoubleClickObject?: () => void;
 }
+
+const DEMO_SIZES_MM = [180, 140, 220, 120, 160];
 
 export class FabricCanvas {
   readonly canvas: Canvas;
   private readonly lab: LabOptions;
+  private readonly manager: WorkAreaManager;
   private readonly workArea: WorkAreaConfigState;
+  private readonly onDoubleClickObject?: () => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
+  private syncingSelection = false;
 
   constructor(
     private readonly canvasEl: HTMLCanvasElement,
@@ -24,7 +39,9 @@ export class FabricCanvas {
     options: FabricCanvasOptions
   ) {
     this.lab = options.lab;
+    this.manager = options.manager;
     this.workArea = options.workArea ?? workAreaConfig.getState();
+    this.onDoubleClickObject = options.onDoubleClickObject;
 
     if (!iconsReady()) {
       console.warn('[FabricCanvas] action icons not preloaded');
@@ -36,7 +53,21 @@ export class FabricCanvas {
       preserveObjectStacking: true,
     });
 
+    const sceneCanvas = getSceneCanvas(this.canvas);
+    if (sceneCanvas) sceneCanvas.workAreaManager = this.manager;
+
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
+    this.manager.subscribe(() => this.onManagerChange());
+    this.canvas.on('selection:created', (e) => this.onCanvasSelection(e.selected?.[0]));
+    this.canvas.on('selection:updated', (e) => this.onCanvasSelection(e.selected?.[0]));
+    this.canvas.on('selection:cleared', () => this.onCanvasSelection(undefined));
+    this.canvas.on('mouse:dblclick', (e) => {
+      const target = e.target;
+      if (target && !isBedObject(target)) {
+        this.onDoubleClickObject?.();
+      }
+    });
+
     this.drawBed();
     this.syncDimensions();
     this.resizeObserver = new ResizeObserver(() => {
@@ -52,8 +83,30 @@ export class FabricCanvas {
     this.fitBedInView();
   };
 
-  getWorkAreaState(): WorkAreaConfigState {
-    return this.workArea;
+  private onCanvasSelection(target?: FabricObject): void {
+    if (this.syncingSelection) return;
+    if (!target || isBedObject(target)) {
+      this.manager.selectObject(null);
+      return;
+    }
+    const scene = this.manager.findByFabric(target);
+    this.manager.selectObject(scene?.id ?? null);
+  }
+
+  private onManagerChange(): void {
+    if (this.syncingSelection) return;
+    const id = this.manager.selectedObjectId;
+    if (!id) {
+      this.canvas.discardActiveObject();
+      this.canvas.requestRenderAll();
+      return;
+    }
+    const scene = this.manager.findById(id);
+    if (!scene) return;
+    this.syncingSelection = true;
+    this.canvas.setActiveObject(scene.fabricRef);
+    this.canvas.requestRenderAll();
+    this.syncingSelection = false;
   }
 
   private drawBed(): void {
@@ -66,12 +119,49 @@ export class FabricCanvas {
     this.fitBedInView();
   }
 
-  /** Global hook: user objects get custom controls when F-22 is on (not bed chrome). */
   private onObjectAdded(target?: FabricObject): void {
     if (!target || isBedObject(target)) return;
     if (target.type === 'activeSelection') return;
     if (!this.lab.isEnabled('F-22')) return;
     attachActionControls(target);
+  }
+
+  private existingUserObjects(): FabricObject[] {
+    return this.manager.objects.map((o) => o.fabricRef);
+  }
+
+  private placementLimits() {
+    const { width, height } = this.workArea.blockSize;
+    return getFabricPlacementLimits(this.workArea.margins, width, height);
+  }
+
+  async importSvg(svgText: string, name: string, maxMm?: number): Promise<void> {
+    const obj = await fabricObjectFromSvg(svgText);
+    if (maxMm != null) scaleToMaxMm(obj, maxMm);
+    autoPlaceOnBed(obj, this.existingUserObjects(), this.placementLimits(), 10);
+    const id = this.manager.newId();
+    this.canvas.add(obj);
+    this.manager.addObject({ id, name, fabricRef: obj });
+    this.manager.selectObject(id);
+    this.canvas.setActiveObject(obj);
+    this.canvas.requestRenderAll();
+  }
+
+  async loadDemoSvg(): Promise<void> {
+    const res = await fetch('/demo.svg');
+    if (!res.ok) throw new Error('demo.svg not found');
+    const text = await res.text();
+    await this.importSvg(text, 'demo.svg');
+  }
+
+  async loadStartupDemos(): Promise<void> {
+    if (this.manager.objects.some((o) => o.name.startsWith('demo-'))) return;
+    const res = await fetch('/demo.svg');
+    if (!res.ok) return;
+    const text = await res.text();
+    for (let i = 0; i < DEMO_SIZES_MM.length; i += 1) {
+      await this.importSvg(text, `demo-${i + 1}.svg`, DEMO_SIZES_MM[i]);
+    }
   }
 
   syncDimensions = (): void => {
@@ -112,21 +202,30 @@ export class FabricCanvas {
       hasRotatingPoint: this.lab.isEnabled('F-21'),
     });
 
+    const id = this.manager.newId();
     this.canvas.add(rect);
+    this.manager.addObject({ id, name: `rect-${this.rectCount}.svg`, fabricRef: rect });
+    this.manager.selectObject(id);
     this.canvas.setActiveObject(rect);
     this.canvas.requestRenderAll();
     return rect;
   }
 
-  /** User objects only (excludes bed group). */
+  removeSceneObject(id: string): void {
+    const scene = this.manager.findById(id);
+    if (!scene) return;
+    this.canvas.remove(scene.fabricRef);
+    this.manager.removeObject(id);
+    this.canvas.requestRenderAll();
+  }
+
   getUserObjectCount(): number {
-    return this.canvas.getObjects().filter((o) => !isBedObject(o)).length;
+    return this.manager.objects.length;
   }
 
   getActiveObjectName(): string | null {
-    const active = this.canvas.getActiveObject();
-    if (!active || isBedObject(active)) return null;
-    return active.type ?? 'object';
+    const scene = this.manager.getSelected();
+    return scene?.name ?? null;
   }
 
   resetView(): void {
