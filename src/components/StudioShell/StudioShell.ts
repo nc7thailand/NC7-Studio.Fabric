@@ -1,12 +1,18 @@
-import { labOptions } from '../../modules/devlab/LabOptions';
-import { vectorCore } from '../../modules/vectorizer/VectorCore';
-import { FabricCanvas } from '../../modules/canvas/FabricCanvas';
-import shellStyles from './studioShell.css?inline';
+import type { PanelId } from '../StudioShell/toolbarIcons';
+import { icons } from '../StudioShell/toolbarIcons';
+import {
+  renderFileSidebar,
+  renderObjectPanel,
+  renderSetupPanel,
+  renderToolsPanel,
+} from '../Sidebar/SidebarPanel';
+import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
 
 export class StudioShell {
   private root: HTMLElement;
-  private fabricCanvas: FabricCanvas | null = null;
-  private selectionLabel: HTMLElement | null = null;
+  private openPanel: PanelId = null;
+  private menuOpen = false;
+  private canvas: CanvasViewportHandle | null = null;
 
   constructor(private readonly mountSelector = '#app') {
     const el = document.querySelector(mountSelector);
@@ -17,132 +23,229 @@ export class StudioShell {
   }
 
   mount(): void {
-    this.injectStyles();
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[VectorCore]', vectorCore.getMigrationNote());
-    console.info('[NC7 Studio.Fabric] Phase 1 modular shell — port 3010');
-  }
-
-  private injectStyles(): void {
-    if (document.getElementById('studio-shell-styles')) return;
-    const tag = document.createElement('style');
-    tag.id = 'studio-shell-styles';
-    tag.textContent = shellStyles;
-    document.head.appendChild(tag);
+    console.info('[NC7 Studio.Fabric] Phase 2a shell — port 3010');
   }
 
   private renderLayout(): string {
     return `
-      <div class="studio-shell">
-        <header class="studio-header">
-          <div>
-            <h1>NC7 Studio.Fabric</h1>
-            <p class="subtitle">Phase 1 · sibling repo (Choice A)</p>
+      <main class="app-layout">
+        <button type="button" id="panel-backdrop" class="panel-backdrop" hidden aria-label="Close panel"></button>
+
+        <section id="Pnl-File" class="floating-panel" role="dialog" aria-label="File panel" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          <div id="file-panel-host"></div>
+        </section>
+
+        <section id="Pnl-Tools" class="floating-panel floating-panel--small" role="dialog" aria-label="Tools panel" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          ${renderToolsPanel()}
+        </section>
+
+        <section id="Pnl-Setup" class="floating-panel" role="dialog" aria-label="Material setup panel" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          ${renderSetupPanel()}
+        </section>
+
+        <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
+          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
+          ${renderObjectPanel()}
+        </section>
+
+        <div class="canvas-wrapper">
+          <div class="canvas-container" id="canvas-mount">
+            <canvas id="fabric-canvas"></canvas>
           </div>
-          <span class="phase-badge">Module 1–3 scaffold</span>
-        </header>
-        <div class="studio-body">
-          <aside class="studio-sidebar">
-            <section class="sidebar-section">
-              <h2>Objects</h2>
-              <p class="sidebar-hint">Sidebar sync — Phase 2</p>
-              <ul id="object-list" class="object-list">
-                <li class="object-list-empty">Add a rectangle to begin</li>
-              </ul>
-            </section>
-            <section class="sidebar-section">
-              <h2>Dev Lab</h2>
-              <p class="sidebar-hint">F-22 action dots: <strong id="lab-f22">on</strong></p>
-              <p class="sidebar-hint">Panel UI — Phase 2</p>
-            </section>
-            <section class="sidebar-section">
-              <h2>Vectorizer</h2>
-              <p class="sidebar-hint">${vectorCore.getMigrationNote()}</p>
-            </section>
-          </aside>
-          <div class="studio-main">
-            <div class="studio-toolbar">
-              <button type="button" id="btn-add-rect" class="btn-primary">Add rectangle</button>
-              <span class="toolbar-hint">Green + clone · Red × delete · Native Fabric resize</span>
+
+          <div class="canvas-overlay-top">
+            <div class="action-toolbar" role="toolbar" aria-label="Actions">
+              <button type="button" id="btn-menu" class="action-btn" title="Menu" aria-label="Menu">${icons.menu}</button>
+              <button type="button" class="action-btn action-btn--undo is-disabled" disabled title="Undo (Phase 2)" aria-label="Undo">${icons.undo}</button>
+              <div class="toolbar-nesting-group" role="group" aria-label="Auto nesting">
+                <label class="toolbar-gap-label" for="toolbar-nesting-gap">Gap</label>
+                <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" value="10.00" disabled aria-label="Nesting gap mm" />
+                <span class="toolbar-gap-unit">mm</span>
+                <button type="button" class="action-btn action-btn--nest is-disabled" disabled title="Auto nest (Phase 4)" aria-label="Auto Nesting">${icons.nest}</button>
+              </div>
+              <div id="action-menu" class="action-menu" role="menu" hidden>
+                <button type="button" class="action-menu-item" data-open-panel="file" role="menuitem">File</button>
+                <button type="button" class="action-menu-item" disabled role="menuitem">View (soon)</button>
+                <button type="button" class="action-menu-item" data-open-panel="tools" role="menuitem">Tools</button>
+                <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="setup" role="menuitem">Setup</button>
+                <button type="button" class="action-menu-item" disabled role="menuitem">Help (soon)</button>
+              </div>
+              <button type="button" id="btn-file" class="action-btn" title="File" aria-label="File">${icons.file}</button>
+              <button type="button" id="btn-home" class="action-btn home-btn" title="Home view" aria-label="Home">${icons.home}</button>
+              <button type="button" id="btn-tools" class="action-btn" title="Tools" aria-label="Tools">${icons.wrench}</button>
             </div>
-            <div class="selection-bar" id="selection-bar" hidden>
+            <div class="material-info-badge">
+              <span>Material: 1200 × 600 mm</span>
+            </div>
+          </div>
+
+          <div class="canvas-overlay-bottom">
+            <div class="nav-hints-badge">
+              <div class="hint-item"><span>Scroll: Zoom · Drag canvas: Pan · 2D bed</span></div>
+              <span class="hint-divider">|</span>
+              <div class="hint-item"><span>Green + clone · Red × delete</span></div>
+              <span class="hint-divider">|</span>
+              <div class="hint-item"><span>Double-click object: Properties (soon)</span></div>
+            </div>
+            <div class="selection-badge" id="selection-badge" hidden>
               <span class="pulse-dot"></span>
               <span id="selection-name">Selected</span>
             </div>
-            <div id="canvas-mount" class="canvas-mount">
-              <canvas id="fabric-canvas"></canvas>
-            </div>
-            <footer class="studio-footer">
-              <span>Legacy Three.js Studio untouched · cutover at 100% parity</span>
-            </footer>
           </div>
         </div>
-      </div>
+      </main>
     `;
   }
 
   private bindUi(): void {
     const canvasEl = this.root.querySelector('#fabric-canvas');
     const mountEl = this.root.querySelector('#canvas-mount');
-    const addBtn = this.root.querySelector('#btn-add-rect');
-    this.selectionLabel = this.root.querySelector('#selection-name');
-    const selectionBar = this.root.querySelector('#selection-bar');
-    const labF22 = this.root.querySelector('#lab-f22');
-
     if (!(canvasEl instanceof HTMLCanvasElement) || !(mountEl instanceof HTMLElement)) {
       throw new Error('StudioShell: canvas mount missing');
     }
 
-    this.fabricCanvas = new FabricCanvas(canvasEl, mountEl, { lab: labOptions });
+    this.canvas = mountCanvasViewport(mountEl, canvasEl);
+    this.refreshFilePanel();
+    this.canvas.addRectangle();
+    this.updateSelectionUi();
 
-    const updateLabLabel = () => {
-      if (labF22) {
-        labF22.textContent = labOptions.isEnabled('F-22') ? 'on' : 'off';
+    this.canvas.onSelectionChange(() => {
+      this.updateSelectionUi();
+      this.refreshFilePanel();
+    });
+
+    this.root.querySelector('#btn-menu')?.addEventListener('click', () => {
+      this.menuOpen = !this.menuOpen;
+      this.syncMenuUi();
+    });
+
+    this.root.querySelector('#btn-file')?.addEventListener('click', () => {
+      this.menuOpen = false;
+      this.togglePanel('file');
+    });
+
+    this.root.querySelector('#btn-tools')?.addEventListener('click', () => {
+      this.menuOpen = false;
+      this.togglePanel('tools');
+    });
+
+    this.root.querySelector('#btn-home')?.addEventListener('click', () => {
+      this.canvas?.resetView();
+    });
+
+    this.root.querySelector('#panel-backdrop')?.addEventListener('click', () => this.closePanels());
+
+    this.root.querySelectorAll('[data-close-panel]').forEach((el) => {
+      el.addEventListener('click', () => this.closePanels());
+    });
+
+    this.root.querySelectorAll('[data-open-panel]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-open-panel') as PanelId;
+        if (id) this.openPanel = id;
+        this.syncPanelsUi();
+      });
+    });
+
+    this.root.querySelectorAll('.action-menu-item[data-open-panel]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this.menuOpen = false;
+        const id = el.getAttribute('data-open-panel') as PanelId;
+        if (id) this.openPanel = id;
+        this.syncPanelsUi();
+        this.syncMenuUi();
+      });
+    });
+
+    this.root.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.id === 'btn-load-demo-sidebar') {
+        this.canvas?.addRectangle();
+        this.refreshFilePanel();
       }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.closePanels();
+    });
+
+    this.syncMenuUi();
+    this.syncPanelsUi();
+  }
+
+  private togglePanel(id: PanelId): void {
+    this.openPanel = this.openPanel === id ? null : id;
+    this.syncPanelsUi();
+  }
+
+  private closePanels(): void {
+    this.openPanel = null;
+    this.menuOpen = false;
+    this.syncPanelsUi();
+    this.syncMenuUi();
+  }
+
+  private syncMenuUi(): void {
+    const menu = this.root.querySelector('#action-menu');
+    const btn = this.root.querySelector('#btn-menu');
+    if (menu instanceof HTMLElement) menu.hidden = !this.menuOpen;
+    btn?.classList.toggle('active', this.menuOpen);
+  }
+
+  private syncPanelsUi(): void {
+    const backdrop = this.root.querySelector('#panel-backdrop');
+    const panels: Record<Exclude<PanelId, null>, string> = {
+      file: '#Pnl-File',
+      tools: '#Pnl-Tools',
+      setup: '#Pnl-Setup',
+      object: '#Pnl-Object',
     };
-    updateLabLabel();
-    labOptions.subscribe(updateLabLabel);
 
-    this.fabricCanvas.canvas.on('selection:created', () => this.updateSelection(selectionBar));
-    this.fabricCanvas.canvas.on('selection:updated', () => this.updateSelection(selectionBar));
-    this.fabricCanvas.canvas.on('selection:cleared', () => {
-      if (selectionBar instanceof HTMLElement) selectionBar.hidden = true;
+    if (backdrop instanceof HTMLElement) {
+      backdrop.hidden = this.openPanel === null;
+    }
+
+    (Object.keys(panels) as Array<Exclude<PanelId, null>>).forEach((key) => {
+      const el = this.root.querySelector(panels[key]);
+      if (el instanceof HTMLElement) {
+        el.hidden = this.openPanel !== key;
+      }
     });
 
-    addBtn?.addEventListener('click', () => {
-      this.fabricCanvas?.addRectangle();
-      this.updateObjectList();
-      this.updateSelection(selectionBar);
+    this.root.querySelector('#btn-file')?.classList.toggle('active', this.openPanel === 'file');
+    this.root.querySelector('#btn-tools')?.classList.toggle('active', this.openPanel === 'tools');
+  }
+
+  private refreshFilePanel(): void {
+    const host = this.root.querySelector('#file-panel-host');
+    if (!(host instanceof HTMLElement) || !this.canvas) return;
+    const count = this.canvas.getObjectCount();
+    host.innerHTML = renderFileSidebar(count);
+
+    host.querySelector('#btn-load-demo-sidebar')?.addEventListener('click', () => {
+      this.canvas?.addRectangle();
+      this.refreshFilePanel();
     });
-
-    this.fabricCanvas.addRectangle();
-    this.updateObjectList();
-    this.updateSelection(selectionBar);
   }
 
-  private updateSelection(selectionBar: Element | null): void {
-    const name = this.fabricCanvas?.getActiveObjectName();
-    if (selectionBar instanceof HTMLElement) {
-      selectionBar.hidden = !name;
-    }
-    if (this.selectionLabel && name) {
-      this.selectionLabel.textContent = `Selected: ${name}`;
-    }
-  }
+  private updateSelectionUi(): void {
+    const badge = this.root.querySelector('#selection-badge');
+    const nameEl = this.root.querySelector('#selection-name');
+    const propType = this.root.querySelector('#obj-prop-type');
+    const name = this.canvas?.getActiveObjectName();
 
-  private updateObjectList(): void {
-    const list = this.root.querySelector('#object-list');
-    if (!(list instanceof HTMLElement) || !this.fabricCanvas) return;
-    const count = this.fabricCanvas.canvas.getObjects().length;
-    list.innerHTML =
-      count === 0
-        ? '<li class="object-list-empty">Add a rectangle to begin</li>'
-        : `<li>${count} object(s) on bed — list sync Phase 2</li>`;
+    if (badge instanceof HTMLElement) badge.hidden = !name;
+    if (nameEl && name) nameEl.textContent = `Selected: ${name}`;
+    if (propType) propType.textContent = name ?? '—';
   }
 
   destroy(): void {
-    this.fabricCanvas?.dispose();
-    this.fabricCanvas = null;
+    this.canvas?.dispose();
+    this.canvas = null;
   }
 }

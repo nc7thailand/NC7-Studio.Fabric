@@ -81,6 +81,11 @@ export class FabricCanvas {
     return active.type ?? 'object';
   }
 
+  resetView(): void {
+    this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    this.canvas.requestRenderAll();
+  }
+
   dispose(): void {
     window.removeEventListener('resize', this.syncDimensions);
     this.resizeObserver?.disconnect();
