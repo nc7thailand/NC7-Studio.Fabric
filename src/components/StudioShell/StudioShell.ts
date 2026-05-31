@@ -21,7 +21,7 @@ export class StudioShell {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
     console.info('[VectorCore]', vectorCore.getMigrationNote());
-    console.info('[fabric-v2] Phase 1 modular shell — port 3010');
+    console.info('[NC7 Studio.Fabric] Phase 1 modular shell — port 3010');
   }
 
   private injectStyles(): void {
@@ -37,8 +37,8 @@ export class StudioShell {
       <div class="studio-shell">
         <header class="studio-header">
           <div>
-            <h1>NC7 FoamArt Studio</h1>
-            <p class="subtitle">Fabric v2 · Phase 1 · sibling repo (Choice A)</p>
+            <h1>NC7 Studio.Fabric</h1>
+            <p class="subtitle">Phase 1 · sibling repo (Choice A)</p>
           </div>
           <span class="phase-badge">Module 1–3 scaffold</span>
         </header>

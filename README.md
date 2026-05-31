@@ -1,9 +1,9 @@
-# AG-NC7-FoamArt-Fabric
+# NC7 Studio.Fabric
 
-**NC7 FoamArt Studio v2** — Fabric.js engine sibling repo (**Choice A**).  
+**NC7 Studio.Fabric** — Fabric.js engine sibling repo (**Choice A**).  
 Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 
-**Cutover rule (BK + JM):** Fabric v2 replaces Studio only at **100% feature parity** with legacy.
+**Cutover rule (BK + JM):** NC7 Studio.Fabric replaces Studio only at **100% feature parity** with legacy.
 
 ---
 
@@ -43,7 +43,7 @@ src/
 ## Run
 
 ```bash
-cd AG-NC7-FoamArt-Fabric
+cd NC7-Studio.Fabric
 npm install
 npm run dev
 ```
@@ -57,8 +57,8 @@ npm run dev
 
 Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 
-| ID | Feature | Legacy | Fabric v2 |
-|----|---------|--------|-----------|
+| ID | Feature | Legacy | NC7 Studio.Fabric |
+|----|---------|--------|-------------------|
 | **Core** |
 | CORE-MOVE | Move object | ✅ | ✅ Fabric native |
 | CORE-RESIZE | Resize handles | ✅ | ✅ Fabric native |
@@ -104,7 +104,9 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 | Repo | Role | Last known good |
 |------|------|-----------------|
 | `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `AG-NC7-FoamArt-Fabric` | v2 spike (this repo) | local · Phase 1 scaffold |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 1 scaffold |
+
+**GitHub repo name (suggested):** `NC7-Studio.Fabric`
 
 ---
 
