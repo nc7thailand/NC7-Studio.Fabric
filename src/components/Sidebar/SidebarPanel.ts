@@ -1,5 +1,6 @@
 import { icons } from '../StudioShell/toolbarIcons';
 import { workAreaConfig, STUDIO_ORIGINS, formatOriginLabel } from '../../modules/config/WorkAreaConfig';
+import { VECTORIZER_PAUSED, VECTORIZER_PAUSED_MESSAGE } from '../../modules/vectorizer/vectorizerPause';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
@@ -73,7 +74,8 @@ export function renderToolsPanel(): string {
       <div class="tools-panel-actions">
         <button type="button" class="tools-action-btn" data-open-panel="setup">Material Setup</button>
         <button type="button" class="tools-action-btn" disabled>Remote Access (soon)</button>
-        <button type="button" class="tools-action-btn" data-open-vectorcore>Trace Image (Legacy Vectorizer)</button>
+        <button type="button" class="tools-action-btn" data-open-vectorcore ${VECTORIZER_PAUSED ? 'disabled title="Vectorizer paused"' : ''}>Trace Image (Legacy Vectorizer)</button>
+        ${VECTORIZER_PAUSED ? `<p class="section-hint vectorizer-paused-hint">${VECTORIZER_PAUSED_MESSAGE}</p>` : ''}
         <button type="button" class="tools-action-btn" data-open-panel="devlab">Canvas Feature Lab</button>
       </div>
     </div>
@@ -208,11 +210,15 @@ export function renderVectorizerPanel(): string {
         <span class="version-tag">Legacy · :3009</span>
       </div>
       <div class="sidebar-content">
-        <p class="section-hint">
+        ${
+          VECTORIZER_PAUSED
+            ? `<p class="section-hint vectorizer-paused-hint">${VECTORIZER_PAUSED_MESSAGE}</p>`
+            : `<p class="section-hint">
           Opens the production vectorizer from FoamArt Studio (:3009) inside NC7 Studio.Fabric.
           Trace your image, then choose <strong>Send to Foam Bed Canvas</strong> to import SVG paths here.
         </p>
-        <button type="button" class="tools-action-btn" data-open-vectorcore>Open Legacy Vectorizer</button>
+        <button type="button" class="tools-action-btn" data-open-vectorcore>Open Legacy Vectorizer</button>`
+        }
       </div>
     </div>
   `;

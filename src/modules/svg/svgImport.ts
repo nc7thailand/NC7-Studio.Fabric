@@ -8,6 +8,7 @@ import {
   getCncBoundingRect,
   normalizeFabricObjectToCncFrame,
 } from './pathCncGeometry';
+import { filterStrayImportPaths } from './strayPathFilter';
 
 const DEFAULT_MAX_MM = 300;
 const BED_ROLE = 'work-area-bed';
@@ -134,12 +135,63 @@ export async function loadTracedContentCollection(svgText: string): Promise<Grou
   });
 
   tagPathLoops(collection);
-
-  stripLegacyLayoutMatrix(collection);
-  scaleToMaxMm(collection, DEFAULT_MAX_MM);
   applyVectorizerEngineeringStyle(collection);
   collection.setCoords();
   return collection;
+}
+
+export type SvgViewBox = { minX: number; minY: number; width: number; height: number };
+
+export function parseSvgViewBox(svgText: string): SvgViewBox | null {
+  const match = svgText.match(/viewBox\s*=\s*["']([^"']+)["']/i);
+  if (!match) return null;
+  const parts = match[1].trim().split(/[\s,]+/).map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+  return { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] };
+}
+
+/**
+ * Map SVG viewBox → bed mm (same framing as browser preview in buffer panel).
+ * Avoids stripLegacyLayoutMatrix + Fabric bbox drift on commit.
+ */
+export function placeTracedContentOnBed(
+  collection: FabricObject,
+  svgText: string,
+  limits: FabricPlacementLimits,
+  maxMm = DEFAULT_MAX_MM
+): void {
+  const vb = parseSvgViewBox(svgText);
+  if (!vb || vb.width <= 0 || vb.height <= 0) {
+    stripLegacyLayoutMatrix(collection);
+    scaleToMaxMm(collection, maxMm);
+    centerObjectInPlacementLimits(collection, limits);
+    collection.setCoords();
+    return;
+  }
+
+  const usableW = limits.maxX - limits.minX;
+  const usableH = limits.maxY - limits.minY;
+  const fitScale = Math.min(usableW / vb.width, usableH / vb.height);
+  const capScale = maxMm / Math.max(vb.width, vb.height);
+  const scale = Math.min(fitScale, capScale);
+
+  const contentW = vb.width * scale;
+  const contentH = vb.height * scale;
+
+  collection.set({
+    originX: 'left',
+    originY: 'top',
+    angle: 0,
+    scaleX: scale,
+    scaleY: scale,
+    left: limits.minX + (usableW - contentW) / 2 - vb.minX * scale,
+    top: limits.minY + (usableH - contentH) / 2 - vb.minY * scale,
+  });
+
+  if (collection instanceof Group) {
+    collection.triggerLayout();
+  }
+  collection.setCoords();
 }
 
 /** @deprecated Use loadTracedContentCollection */
@@ -147,23 +199,54 @@ export async function fabricObjectFromVectorizerSvg(svgText: string): Promise<Fa
   return loadTracedContentCollection(svgText);
 }
 
-export async function fabricObjectFromSvg(svgText: string): Promise<FabricObject> {
-  const { objects, options } = await loadSVGFromString(svgText, cncSvgImportReviver);
-  const filtered = filterGhostNodes(objects);
+/** One Fabric group per imported SVG file (all top-level nodes become children). */
+export function groupFabricSvgObjects(
+  objects: FabricObject[],
+  options?: Record<string, unknown>
+): Group {
+  const filtered = filterStrayImportPaths(filterGhostNodes(objects));
   if (filtered.length === 0) {
     throw new Error('No paths found in SVG');
   }
+  if (filtered.length === 1 && filtered[0] instanceof Group) {
+    const inner = filterStrayImportPaths(filtered[0].getObjects());
+    if (inner.length === 0) return filtered[0];
+    if (inner.length === 1 && inner[0] instanceof Group) return inner[0];
+    if (inner.length === 1) {
+      const wrapped = new Group([inner[0]]);
+      wrapped.setCoords();
+      return wrapped;
+    }
+    return util.groupSVGElements(inner, options) as Group;
+  }
+  if (filtered.length === 1) {
+    const wrapped = new Group([filtered[0]]);
+    wrapped.setCoords();
+    return wrapped;
+  }
+  return util.groupSVGElements(filtered, options) as Group;
+}
 
-  filtered.forEach(normalizeFabricObjectToCncFrame);
-
-  const grouped =
-    filtered.length === 1
-      ? filtered[0]
-      : (util.groupSVGElements(filtered, options) as Group);
+export async function fabricObjectFromSvg(svgText: string): Promise<FabricObject> {
+  const { objects, options } = await loadSVGFromString(svgText, cncSvgImportReviver);
+  const grouped = groupFabricSvgObjects(objects, options);
 
   scaleToMaxMm(grouped, DEFAULT_MAX_MM);
   prepareLayoutObject(grouped);
   return grouped;
+}
+
+/** Open/layout import — one group per file, bed/grid stripped, coordinates preserved. */
+export async function loadSvgLayoutAsGroup(
+  svgText: string,
+  workArea: WorkAreaConfigState
+): Promise<Group> {
+  const { objects, options } = await loadSVGFromString(svgText, cncSvgImportReviver);
+  const userObjects = filterGhostNodes(objects).filter((o) => !isLayoutSystemObject(o, workArea));
+  if (userObjects.length === 0) {
+    throw new Error('No layout objects found in SVG (bed/grid filtered out)');
+  }
+  return groupFabricSvgObjects(userObjects, options);
 }
 
 export function scaleToMaxMm(obj: FabricObject, sizeMm: number): void {

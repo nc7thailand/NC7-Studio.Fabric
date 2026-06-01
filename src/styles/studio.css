@@ -1203,6 +1203,138 @@ body.dev-route {
   color: rgba(255, 255, 255, 0.1);
 }
 
+.vectorizer-paused-hint {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.vectorizer-paused-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: #0b0f19;
+  color: var(--text-primary);
+}
+
+.vectorizer-paused-screen h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.vectorizer-paused-screen p {
+  max-width: 28rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Vectorizer source SVG buffer (hidden while VECTORIZER_PAUSED) */
+.vectorizer-buffer-panel {
+  display: none;
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  z-index: 12;
+  width: min(340px, 44vw);
+  display: flex;
+  flex-direction: column;
+  background: rgba(11, 15, 25, 0.94);
+  border: 1px solid rgba(99, 102, 241, 0.5);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.vectorizer-buffer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vectorizer-buffer-title {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.vectorizer-buffer-sub {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.vectorizer-buffer-dismiss {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.vectorizer-buffer-dismiss:hover {
+  color: var(--text-primary);
+}
+
+.vectorizer-buffer-preview {
+  height: min(260px, 36vh);
+  min-height: 140px;
+  padding: 8px;
+  background: #0f172a;
+  overflow: auto;
+}
+
+.vectorizer-buffer-preview .raw-svg-preview-inner {
+  width: 100%;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vectorizer-buffer-preview .raw-svg-preview-inner svg {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.vectorizer-buffer-actions {
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vectorizer-buffer-commit {
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #0b0f19;
+  background: linear-gradient(135deg, #a5b4fc 0%, #6366f1 100%);
+}
+
+.vectorizer-buffer-commit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.vectorizer-buffer-commit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Selection Badge HUD */
 .selection-badge {
   background: rgba(217, 70, 239, 0.12);

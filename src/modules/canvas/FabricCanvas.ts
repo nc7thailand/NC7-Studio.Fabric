@@ -15,13 +15,14 @@ import {
   applyVectorizerEngineeringStyle,
   centerObjectInPlacementLimits,
   fabricObjectFromSvg,
-  isLayoutSystemObject,
-  loadSvgLayoutObjects,
+  loadSvgLayoutAsGroup,
   loadTracedContentCollection,
   NC7_TRACED_COLLECTION_KEY,
+  placeTracedContentOnBed,
   prepareLayoutObject,
   scaleToMaxMm,
 } from '../svg/svgImport';
+import { scheduleImportedBoundsRefresh } from '../svg/importBoundsSync';
 import { exportCncLayoutSvg, getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
 import { canvasPalette } from '../devlab/CanvasPalette';
 import {
@@ -585,38 +586,27 @@ export class FabricCanvas {
   }
 
   async openSvgLayout(svgText: string, fileName: string): Promise<void> {
-    const parsed = await loadSvgLayoutObjects(svgText);
-    const objects = parsed.filter((obj) => !isLayoutSystemObject(obj, this.workArea));
-    if (objects.length === 0) {
-      throw new Error('No layout objects found in SVG (bed/grid filtered out)');
-    }
+    const grouped = await loadSvgLayoutAsGroup(svgText, this.workArea);
 
     await this.withoutHistoryAsync(async () => {
-      this.clearUserWorkspace();
       const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
+      const name = `${baseName}.svg`;
 
-      for (let i = 0; i < objects.length; i += 1) {
-        const obj = objects[i];
-        prepareLayoutObject(obj);
-        if (this.shouldClamp()) {
-          this.clampObjectInMargins(obj);
-        }
-        const id = this.manager.newId();
-        const name =
-          objects.length === 1 ? `${baseName}.svg` : `${baseName}-${i + 1}.svg`;
-        if (this.lab.isEnabled('F-22')) attachActionControls(obj);
-        this.canvas.add(obj);
-        this.manager.addObject({ id, name, fabricRef: obj });
+      prepareLayoutObject(grouped);
+      if (this.shouldClamp()) {
+        this.clampObjectInMargins(grouped);
       }
+      scheduleImportedBoundsRefresh(grouped);
+      const id = this.manager.newId();
+      if (this.lab.isEnabled('F-22')) attachActionControls(grouped);
+      this.canvas.add(grouped);
+      this.manager.addObject({ id, name, fabricRef: grouped });
 
-      if (this.lab.isEnabled('F-50') && objects.length > 0) {
-        const first = this.manager.objects[0];
-        if (first) {
-          this.manager.selectObject(first.id);
-          this.canvas.setActiveObject(first.fabricRef);
-        }
+      if (this.lab.isEnabled('F-50')) {
+        this.manager.selectObject(id);
+        this.canvas.setActiveObject(grouped);
       }
-      this.canvas.requestRenderAll();
+      scheduleImportedBoundsRefresh(grouped, () => this.canvas.requestRenderAll());
     });
   }
 
@@ -627,6 +617,7 @@ export class FabricCanvas {
     if (this.shouldClamp()) {
       this.clampObjectInMargins(obj);
     }
+    scheduleImportedBoundsRefresh(obj);
     const id = this.manager.newId();
     if (this.lab.isEnabled('F-22')) attachActionControls(obj);
     this.canvas.add(obj);
@@ -637,7 +628,7 @@ export class FabricCanvas {
       this.manager.selectObject(id);
       this.canvas.setActiveObject(obj);
     }
-    this.canvas.requestRenderAll();
+    scheduleImportedBoundsRefresh(obj, () => this.canvas.requestRenderAll());
     return id;
   }
 
@@ -651,7 +642,7 @@ export class FabricCanvas {
     this.canvas.add(obj);
 
     const limits = this.placementLimits();
-    centerObjectInPlacementLimits(obj, limits);
+    placeTracedContentOnBed(obj, svgText, limits);
     obj.setCoords();
 
     if (this.shouldClamp()) {
@@ -662,8 +653,13 @@ export class FabricCanvas {
     this.manager.addObject(scene);
     this.recordAdd(scene);
 
-    this.manager.selectObject(id);
-    this.canvas.setActiveObject(obj);
+    if (this.lab.isEnabled('F-50')) {
+      this.manager.selectObject(id);
+      this.canvas.setActiveObject(obj);
+    } else {
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
+    }
     this.focusObjectInView(obj);
     this.canvas.requestRenderAll();
     return id;
@@ -781,12 +777,8 @@ export class FabricCanvas {
         this.manager.addObject({ id, name: spec.name, fabricRef: path });
       }
 
-      if (this.lab.isEnabled('F-50') && this.manager.objects.length > 0) {
-        const first = this.manager.objects[0];
-        this.manager.selectObject(first.id);
-        this.canvas.setActiveObject(first.fabricRef);
-      }
-
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
       this.canvas.requestRenderAll();
     });
   }

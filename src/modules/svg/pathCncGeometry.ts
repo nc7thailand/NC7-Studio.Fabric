@@ -220,6 +220,21 @@ export function getCncBoundingRect(obj: FabricObject): TBBox {
   return makeBoundingBoxFromPoints([coords.tl, coords.tr, coords.bl, coords.br]);
 }
 
+/** Union of CNC path bounds for placement and post-import selection sync. */
+export function unionCncBoundingRects(objects: FabricObject[]): TBBox {
+  if (objects.length === 0) return { left: 0, top: 0, width: 0, height: 0 };
+  let box = getCncBoundingRect(objects[0]);
+  for (let i = 1; i < objects.length; i += 1) {
+    const next = getCncBoundingRect(objects[i]);
+    const left = Math.min(box.left, next.left);
+    const top = Math.min(box.top, next.top);
+    const right = Math.max(box.left + box.width, next.left + next.width);
+    const bottom = Math.max(box.top + box.height, next.top + next.height);
+    box = { left, top, width: right - left, height: bottom - top };
+  }
+  return box;
+}
+
 function pathCommandsToAbsoluteBed(path: Path): PathCommand[] {
   const matrix = path.calcTransformMatrix();
   const offset = path.pathOffset ?? new Point(0, 0);

@@ -15,12 +15,12 @@ import type { TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
 import { labOptions } from '../../modules/devlab/LabOptions';
 import {
   clearPendingSvg,
-  readPendingSvg,
 } from '../../modules/vectorizer/pendingSvgHandoff';
 import {
   bindVectorizerStorageHandoffListener,
   type VectorizerExportData,
 } from '../../modules/vectorizer/vectorizerPostMessage';
+import { VECTORIZER_PAUSED } from '../../modules/vectorizer/vectorizerPause';
 
 export class StudioShell {
   private root: HTMLElement;
@@ -30,7 +30,6 @@ export class StudioShell {
   private transformOverlay: TransformOverlayDetail | null = null;
   private setupUnsub: (() => void) | null = null;
   private vectorizerStorageUnsub: (() => void) | null = null;
-  private vectorizerImportBusy = false;
   private nestingPanelOpen = false;
 
   constructor(private readonly mountSelector = '#app') {
@@ -138,6 +137,7 @@ export class StudioShell {
               <span id="selection-loop-count" class="selection-loop-count" hidden></span>
             </div>
           </div>
+
         </div>
       </main>
     `;
@@ -162,11 +162,14 @@ export class StudioShell {
       },
     });
 
-    void this.importPendingVectorCoreSvg();
-
-    this.vectorizerStorageUnsub = bindVectorizerStorageHandoffListener((data) => {
-      void this.importVectorizerSvg(data);
-    });
+    if (!VECTORIZER_PAUSED) {
+      void this.stagePendingVectorizerHandoff();
+      this.vectorizerStorageUnsub = bindVectorizerStorageHandoffListener((data) => {
+        this.stageVectorizerHandoff(data);
+      });
+    } else {
+      clearPendingSvg();
+    }
 
     this.bindVectorCoreLauncher(this.root);
 
@@ -360,53 +363,39 @@ export class StudioShell {
     this.syncNestingPanelUi();
   }
 
-  /** Import traced SVG from vectorizer tab via localStorage `storage` event. */
-  async importVectorizerSvg(data: VectorizerExportData): Promise<void> {
-    if (!this.canvas || this.vectorizerImportBusy) return;
+  stageVectorizerHandoff(_data: VectorizerExportData): void {
+    if (VECTORIZER_PAUSED) {
+      clearPendingSvg();
+      return;
+    }
     if (!labOptions.isEnabled('V-01')) {
       console.warn('[StudioShell] V-01 legacy vectorizer handoff is disabled in Dev Lab.');
       return;
     }
+  }
 
-    this.vectorizerImportBusy = true;
-    try {
-      await this.canvas.importVectorizerSvg(data.svgText, data.name);
-      this.updateSelectionUi();
-      this.refreshFilePanel();
-      this.refreshObjectPanel();
-    } catch (err) {
-      console.error('[StudioShell] vectorizer SVG import failed', err);
-    } finally {
+  private async stagePendingVectorizerHandoff(): Promise<void> {
+    if (VECTORIZER_PAUSED) {
       clearPendingSvg();
-      this.vectorizerImportBusy = false;
+      return;
     }
   }
 
   private bindVectorCoreLauncher(scope: ParentNode): void {
     scope.querySelectorAll('[data-open-vectorcore]').forEach((el) => {
+      if (VECTORIZER_PAUSED) {
+        if (el instanceof HTMLButtonElement) {
+          el.disabled = true;
+          el.title = 'Vectorizer paused';
+        }
+        return;
+      }
       el.addEventListener('click', () => {
         this.menuOpen = false;
         this.closePanels();
         window.open('/vectorcore', '_blank', 'noopener,noreferrer');
       });
     });
-  }
-
-  private async importPendingVectorCoreSvg(): Promise<void> {
-    if (!this.canvas) return;
-    if (typeof window === 'undefined') return;
-
-    const payload = readPendingSvg();
-    if (!payload?.svgText) return;
-
-    try {
-      await this.importVectorizerSvg({
-        svgText: payload.svgText,
-        name: payload.name ?? 'traced_image.svg',
-      });
-    } finally {
-      clearPendingSvg();
-    }
   }
 
   private toggleNestingPanel(): void {

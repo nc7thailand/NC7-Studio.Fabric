@@ -219,7 +219,7 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
         label: 'Legacy vectorizer handoff',
         detail: 'Import SVG from :3009 vectorizer embed via localStorage buffer.',
         status: 'live',
-        defaultEnabled: true,
+        defaultEnabled: false,
       },
     ],
   },
