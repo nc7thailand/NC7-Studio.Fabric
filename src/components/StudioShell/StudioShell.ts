@@ -83,6 +83,8 @@ export class StudioShell {
             <canvas id="fabric-canvas"></canvas>
           </div>
 
+          <div id="transform-hud" class="transform-dim-overlay" hidden aria-live="polite"></div>
+
           <div class="canvas-overlay-top">
             <div class="action-toolbar" role="toolbar" aria-label="Actions">
               <button type="button" id="btn-menu" class="action-btn" title="Menu" aria-label="Menu">${icons.menu}</button>
@@ -111,7 +113,6 @@ export class StudioShell {
           </div>
 
           <div class="canvas-overlay-bottom">
-            <div id="transform-hud" class="transform-dim-overlay" hidden aria-live="polite"></div>
             <div class="nav-hints-badge">
               <div class="hint-item"><span>Scroll: Zoom · Drag canvas: Pan · 2D bed</span></div>
               <span class="hint-divider">|</span>

@@ -843,6 +843,9 @@ body.dev-route {
   flex: 1;
   position: relative;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -853,6 +856,8 @@ body.dev-route {
 }
 
 .canvas-container {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
@@ -860,24 +865,28 @@ body.dev-route {
 /* Canvas Overlays */
 .canvas-overlay-top {
   position: absolute;
-  top: 20px;
-  left: 20px;
-  right: 20px;
+  top: max(16px, env(safe-area-inset-top, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
   pointer-events: none;
   z-index: 20;
 }
 
 .canvas-overlay-bottom {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
-  right: 20px;
+  bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  left: max(16px, env(safe-area-inset-left, 0px));
+  right: max(16px, env(safe-area-inset-right, 0px));
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
   pointer-events: none;
   z-index: 20;
 }
@@ -901,11 +910,11 @@ body.dev-route {
   transition: all 0.2s ease;
 }
 
-/* Touch-friendly icon toolbar (always visible) */
+/* Touch-friendly icon toolbar (inside canvas overlay) */
 .action-toolbar {
-  position: fixed;
-  top: 20px;
-  left: 20px;
+  position: relative;
+  top: auto;
+  left: auto;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -917,7 +926,10 @@ body.dev-route {
   border: 1px solid var(--border-color);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
-  z-index: 120;
+  z-index: 1;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  max-width: min(100%, 720px);
 }
 
 .action-btn {
@@ -1115,6 +1127,12 @@ body.dev-route {
   font-size: 12px;
   font-weight: 500;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: auto;
+  flex: 0 0 auto;
+  max-width: min(260px, 42vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Nav Hints HUD */
@@ -1130,7 +1148,11 @@ body.dev-route {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .hint-item {
@@ -1157,6 +1179,10 @@ body.dev-route {
   align-items: center;
   gap: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: min(360px, 100%);
+  pointer-events: auto;
 }
 
 .pulse-dot {
@@ -1258,6 +1284,18 @@ body.dev-route {
   text-transform: capitalize;
 }
 
+@media (max-width: 1100px) {
+  .canvas-overlay-top .action-toolbar {
+    max-width: 100%;
+    flex: 1 1 100%;
+  }
+
+  .toolbar-nesting-group {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+}
+
 /* Responsive Rules for iPad and Smaller Screens */
 @media (max-width: 900px) {
   .canvas-wrapper {
@@ -1269,16 +1307,22 @@ body.dev-route {
      (Canvas size can change when the drawer opens; pin controls to viewport.) */
   .canvas-overlay-top {
     position: fixed;
-    top: 16px;
-    left: 16px;
-    right: 16px;
+    top: max(12px, env(safe-area-inset-top, 0px));
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
   }
 
   .canvas-overlay-bottom {
     position: fixed;
-    bottom: 16px;
-    left: 16px;
-    right: 16px;
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+  }
+
+  .material-info-badge {
+    font-size: 11px;
+    padding: 6px 10px;
+    max-width: min(200px, 38vw);
   }
 }
 
@@ -1461,22 +1505,9 @@ body.dev-route {
   font-weight: 600;
 }
 
-/* NC7 Studio.Fabric — 2D canvas host (Phase 2a) */
-.canvas-container .canvas-container,
-#canvas-mount {
-  width: 100%;
-  height: 100%;
-  position: relative;
-}
-
+/* NC7 Studio.Fabric — 2D canvas host */
 #canvas-mount canvas {
   display: block;
-}
-
-.action-toolbar {
-  position: relative;
-  top: auto;
-  left: auto;
 }
 
 .file-list {
