@@ -1,5 +1,5 @@
-/** Set false when BK is ready to resume vectorizer + buffer work. */
-export const VECTORIZER_PAUSED = true;
+/** Set true to disable trace / handoff UI without touching the unified import pipeline. */
+export const VECTORIZER_PAUSED = false;
 
 export const VECTORIZER_PAUSED_MESSAGE =
-  'Vectorizer is paused while we stabilize the foam bed canvas. File → Open SVG still works.';
+  'Vectorizer is paused. File → Open SVG and vectorizer handoff use the same import path when enabled.';

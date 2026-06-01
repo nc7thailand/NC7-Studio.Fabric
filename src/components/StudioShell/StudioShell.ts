@@ -15,6 +15,7 @@ import type { TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
 import { labOptions } from '../../modules/devlab/LabOptions';
 import {
   clearPendingSvg,
+  readPendingSvg,
 } from '../../modules/vectorizer/pendingSvgHandoff';
 import {
   bindVectorizerStorageHandoffListener,
@@ -363,15 +364,35 @@ export class StudioShell {
     this.syncNestingPanelUi();
   }
 
-  stageVectorizerHandoff(_data: VectorizerExportData): void {
+  private async commitVectorizerHandoff(data: VectorizerExportData): Promise<void> {
     if (VECTORIZER_PAUSED) {
       clearPendingSvg();
       return;
     }
     if (!labOptions.isEnabled('V-01')) {
       console.warn('[StudioShell] V-01 legacy vectorizer handoff is disabled in Dev Lab.');
+      clearPendingSvg();
       return;
     }
+    if (!data.svgText?.trim()) return;
+
+    clearPendingSvg();
+
+    try {
+      await this.canvas?.importVectorizerSvg(
+        data.svgText,
+        data.name?.trim() || 'traced_image.svg'
+      );
+      this.updateSelectionUi();
+      this.refreshFilePanel();
+      this.refreshObjectPanel();
+    } catch (err) {
+      console.error('[StudioShell] vectorizer import failed', err);
+    }
+  }
+
+  private stageVectorizerHandoff(data: VectorizerExportData): void {
+    void this.commitVectorizerHandoff(data);
   }
 
   private async stagePendingVectorizerHandoff(): Promise<void> {
@@ -379,6 +400,12 @@ export class StudioShell {
       clearPendingSvg();
       return;
     }
+    const payload = readPendingSvg();
+    if (!payload?.svgText) return;
+    await this.commitVectorizerHandoff({
+      svgText: payload.svgText,
+      name: payload.name ?? 'traced_image.svg',
+    });
   }
 
   private bindVectorCoreLauncher(scope: ParentNode): void {
@@ -489,22 +516,6 @@ export class StudioShell {
 
     const mgr = this.canvas.manager;
     host.innerHTML = renderFileSidebar(mgr.objects, mgr.selectedObjectId);
-
-    host.querySelector('#btn-load-demo-sidebar')?.addEventListener('click', () => {
-      void this.canvas?.loadDemoSvg();
-    });
-
-    host.querySelector('#svg-upload')?.addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      const files = input.files ? Array.from(input.files) : [];
-      void (async () => {
-        for (const file of files) {
-          if (!file.name.toLowerCase().endsWith('.svg')) continue;
-          await this.canvas?.importSvgFile(file);
-        }
-        input.value = '';
-      })();
-    });
 
     host.querySelectorAll('[data-select-id]').forEach((el) => {
       el.addEventListener('click', () => {

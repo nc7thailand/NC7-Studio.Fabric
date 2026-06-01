@@ -19,8 +19,8 @@ export function renderFileSidebar(
   const objectRows =
     objects.length === 0
       ? `<div class="empty-workspace">
-          <p>No SVG files loaded in canvas.</p>
-          <p class="text-sm">Upload an SVG to begin layouts</p>
+          <p>No objects on the foam bed.</p>
+          <p class="text-sm">Use menu → Open SVG File, or trace from vectorcore.</p>
         </div>`
       : `<div class="objects-list-section">
           <h3 class="section-title-sm">SVG Drawings (${objects.length})</h3>
@@ -52,15 +52,6 @@ export function renderFileSidebar(
         </button>
       </div>
       <div class="sidebar-content">
-        <div class="upload-zone">
-          <label for="svg-upload" class="upload-label">
-            ${icons.upload}
-            <span class="upload-title">Upload SVG Drawing</span>
-            <span class="upload-desc">Drag & drop or browse files</span>
-          </label>
-          <input id="svg-upload" type="file" accept=".svg" multiple class="hidden-file-input" />
-        </div>
-        <button type="button" id="btn-load-demo-sidebar" class="tools-action-btn">Load Dummy Layout</button>
         ${objectRows}
       </div>
     </aside>

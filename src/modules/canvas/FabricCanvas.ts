@@ -16,11 +16,10 @@ import {
   centerObjectInPlacementLimits,
   fabricObjectFromSvg,
   loadSvgLayoutAsGroup,
-  loadTracedContentCollection,
   NC7_TRACED_COLLECTION_KEY,
-  placeTracedContentOnBed,
   prepareLayoutObject,
   scaleToMaxMm,
+  TRACED_CONTENT_GROUP_ID,
 } from '../svg/svgImport';
 import { scheduleImportedBoundsRefresh } from '../svg/importBoundsSync';
 import { exportCncLayoutSvg, getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
@@ -585,9 +584,10 @@ export class FabricCanvas {
     });
   }
 
-  async openSvgLayout(svgText: string, fileName: string): Promise<void> {
+  async openSvgLayout(svgText: string, fileName: string): Promise<string> {
     const grouped = await loadSvgLayoutAsGroup(svgText, this.workArea);
 
+    let newId = '';
     await this.withoutHistoryAsync(async () => {
       const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
       const name = `${baseName}.svg`;
@@ -598,6 +598,7 @@ export class FabricCanvas {
       }
       scheduleImportedBoundsRefresh(grouped);
       const id = this.manager.newId();
+      newId = id;
       if (this.lab.isEnabled('F-22')) attachActionControls(grouped);
       this.canvas.add(grouped);
       this.manager.addObject({ id, name, fabricRef: grouped });
@@ -608,6 +609,7 @@ export class FabricCanvas {
       }
       scheduleImportedBoundsRefresh(grouped, () => this.canvas.requestRenderAll());
     });
+    return newId;
   }
 
   async importSvg(svgText: string, name: string, maxMm?: number): Promise<string> {
@@ -632,34 +634,34 @@ export class FabricCanvas {
     return id;
   }
 
-  /** Legacy vectorizer handoff — traced_content collection, bed-center, viewport focus. */
+  /** Vectorizer handoff — same pipeline as menu → Open SVG File (no scale/upload path). */
   async importVectorizerSvg(svgText: string, name: string): Promise<string> {
-    const obj = await loadTracedContentCollection(svgText);
+    const fileName = name.trim() || 'traced_image.svg';
+    const id = await this.openSvgLayout(
+      svgText,
+      fileName.toLowerCase().endsWith('.svg') ? fileName : `${fileName}.svg`
+    );
 
-    const id = this.manager.newId();
-    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+    const scene = this.manager.findById(id);
+    const obj = scene?.fabricRef;
+    if (!obj) return id;
 
-    this.canvas.add(obj);
-
-    const limits = this.placementLimits();
-    placeTracedContentOnBed(obj, svgText, limits);
-    obj.setCoords();
-
-    if (this.shouldClamp()) {
-      this.clampObjectInMargins(obj);
+    const others = this.existingUserObjects().filter((o) => o !== obj);
+    if (others.length > 0) {
+      autoPlaceOnBed(obj, others, this.placementLimits(), this.workArea.objectGap);
+      if (this.shouldClamp()) {
+        this.clampObjectInMargins(obj);
+      }
+      scheduleImportedBoundsRefresh(obj);
     }
 
-    const scene: SceneObject = { id, name, fabricRef: obj };
-    this.manager.addObject(scene);
-    this.recordAdd(scene);
-
-    if (this.lab.isEnabled('F-50')) {
-      this.manager.selectObject(id);
-      this.canvas.setActiveObject(obj);
-    } else {
-      this.manager.selectObject(null);
-      this.canvas.discardActiveObject();
+    if (obj instanceof Group) {
+      obj.set({
+        id: TRACED_CONTENT_GROUP_ID,
+        [NC7_TRACED_COLLECTION_KEY]: true,
+      });
     }
+
     this.focusObjectInView(obj);
     this.canvas.requestRenderAll();
     return id;

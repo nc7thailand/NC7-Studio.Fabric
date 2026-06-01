@@ -96,6 +96,7 @@ export function mountCanvasViewport(
     openSvgLayoutFile: async (file: File) => {
       const text = await file.text();
       await fabric.openSvgLayout(text, file.name);
+      return null;
     },
     loadDemoSvg: () => fabric.loadDemoSvg(),
     addRectangle: () => fabric.addRectangle(),
