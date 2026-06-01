@@ -57,6 +57,8 @@ export interface FabricCanvasOptions {
 }
 
 const DEMO_SIZES_MM = [180, 140, 220, 120, 160];
+const ZOOM_MIN = 0.05;
+const ZOOM_MAX = 20;
 
 export class FabricCanvas {
   readonly canvas: Canvas;
@@ -138,6 +140,8 @@ export class FabricCanvas {
       this.finalizeInteraction(e.target);
     });
 
+    this.bindWheelZoom();
+
     this.historyUnsub = globalHistory.subscribe((state) => {
       this.onHistoryChange?.(state);
     });
@@ -155,6 +159,21 @@ export class FabricCanvas {
   private onWindowResize = (): void => {
     this.syncDimensions();
     this.fitBedInView();
+  };
+
+  /** Scroll wheel zoom toward cursor (matches footer hint). */
+  private bindWheelZoom(): void {
+    this.canvas.on('mouse:wheel', (opt) => {
+      const e = opt.e;
+      const delta = e.deltaY;
+      let zoom = this.canvas.getZoom();
+      zoom *= 0.999 ** delta;
+      zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+      this.canvas.zoomToPoint(opt.viewportPoint, zoom);
+      e.preventDefault();
+      e.stopPropagation();
+      this.canvas.requestRenderAll();
+    });
   };
 
   private historyAdapter(): HistoryAdapter {
