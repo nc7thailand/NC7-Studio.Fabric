@@ -93,6 +93,7 @@ export function buildWorkAreaBed(config: WorkAreaConfigState): Group {
     evented: false,
     objectCaching: false,
     subTargetCheck: false,
+    excludeFromExport: true,
     left: 0,
     top: 0,
     originX: 'left',

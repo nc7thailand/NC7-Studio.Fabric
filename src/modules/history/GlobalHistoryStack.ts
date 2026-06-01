@@ -110,6 +110,13 @@ class GlobalHistoryStack {
     return this.redoStack.length > 0;
   }
 
+  /** Clear undo/redo stacks (e.g. after replacing the whole layout). */
+  reset(): void {
+    this.stack = [];
+    this.redoStack = [];
+    this.notify();
+  }
+
   peek(): HistoryEntry | null {
     return this.stack.length > 0 ? this.stack[this.stack.length - 1] : null;
   }

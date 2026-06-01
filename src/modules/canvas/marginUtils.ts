@@ -1,5 +1,6 @@
 import type { FabricObject } from 'fabric';
 import type { MaterialMargins, StudioOrigin } from '../config/WorkAreaConfig';
+import { getCncBoundingRect } from '../svg/pathCncGeometry';
 
 /** Fabric 2D bed uses top-left origin, Y down (0…height). */
 export interface FabricPlacementLimits {
@@ -45,24 +46,24 @@ export function clampFabricObjectPosition(
   obj.set({ left: l, top: t });
   obj.setCoords();
 
-  let b = obj.getBoundingRect();
+  let b = getCncBoundingRect(obj);
   if (b.left < limits.minX) {
     l += limits.minX - b.left;
     obj.set({ left: l });
     obj.setCoords();
-    b = obj.getBoundingRect();
+    b = getCncBoundingRect(obj);
   }
   if (b.left + b.width > limits.maxX) {
     l -= b.left + b.width - limits.maxX;
     obj.set({ left: l });
     obj.setCoords();
-    b = obj.getBoundingRect();
+    b = getCncBoundingRect(obj);
   }
   if (b.top < limits.minY) {
     t += limits.minY - b.top;
     obj.set({ top: t });
     obj.setCoords();
-    b = obj.getBoundingRect();
+    b = getCncBoundingRect(obj);
   }
   if (b.top + b.height > limits.maxY) {
     t -= b.top + b.height - limits.maxY;

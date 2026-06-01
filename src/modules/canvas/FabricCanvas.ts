@@ -1,4 +1,4 @@
-import { Canvas, Rect, util, type FabricObject, type Group, type TPointerEvent } from 'fabric';
+import { Canvas, ActiveSelection, Path, Rect, util, type FabricObject, type Group, type TPointerEvent } from 'fabric';
 import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { attachActionControls, iconsReady } from './controls';
@@ -12,9 +12,18 @@ import type { WorkAreaManager, SceneObject } from './WorkAreaManager';
 import { getSceneCanvas } from './sceneCanvas';
 import {
   autoPlaceOnBed,
+  applyVectorizerEngineeringStyle,
+  centerObjectInPlacementLimits,
   fabricObjectFromSvg,
+  isLayoutSystemObject,
+  loadSvgLayoutObjects,
+  loadTracedContentCollection,
+  NC7_TRACED_COLLECTION_KEY,
+  prepareLayoutObject,
   scaleToMaxMm,
 } from '../svg/svgImport';
+import { exportCncLayoutSvg, getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
+import { canvasPalette } from '../devlab/CanvasPalette';
 import {
   globalHistory,
   type HistoryAdapter,
@@ -56,7 +65,6 @@ export interface FabricCanvasOptions {
   onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
 }
 
-const DEMO_SIZES_MM = [180, 140, 220, 120, 160];
 const ZOOM_MIN = 0.05;
 const ZOOM_MAX = 20;
 
@@ -76,6 +84,10 @@ export class FabricCanvas {
   private interactionSnapshot: FabricTransformState | null = null;
   private lastInteractionType: 'move' | 'resize' | 'rotate' = 'move';
   private historyUnsub: (() => void) | null = null;
+  private isDraggingViewport = false;
+  private lastPanClientX = 0;
+  private lastPanClientY = 0;
+  private paletteUnsub: (() => void) | null = null;
 
   constructor(
     private readonly canvasEl: HTMLCanvasElement,
@@ -97,7 +109,15 @@ export class FabricCanvas {
       backgroundColor: options.backgroundColor ?? '#0b0f19',
       selection: true,
       preserveObjectStacking: true,
+      svgViewportTransformation: false,
+      includeDefaultValues: false,
     });
+    this.canvas.selectionColor = 'rgba(245, 245, 247, 0.08)';
+    this.canvas.selectionBorderColor = 'rgba(229, 231, 235, 0.55)';
+    this.canvas.selectionLineWidth = 1;
+
+    this.applyPaletteToCanvas();
+    this.paletteUnsub = canvasPalette.subscribe(() => this.applyPaletteToCanvas());
 
     const sceneCanvas = getSceneCanvas(this.canvas);
     if (sceneCanvas) {
@@ -141,6 +161,7 @@ export class FabricCanvas {
     });
 
     this.bindWheelZoom();
+    this.bindDragPan();
 
     this.historyUnsub = globalHistory.subscribe((state) => {
       this.onHistoryChange?.(state);
@@ -161,6 +182,28 @@ export class FabricCanvas {
     this.fitBedInView();
   };
 
+  private applyPaletteToCanvas(): void {
+    const palette = canvasPalette.getState();
+
+    // active selection box
+    this.canvas.selectionBorderColor = 'rgba(209, 209, 214, 0.70)';
+    this.canvas.selectionColor = 'rgba(245, 245, 247, 0.06)';
+
+    // update existing user objects (bed group is not part of manager.objects)
+    for (const scene of this.manager.objects) {
+      scene.fabricRef.set({
+        stroke: palette.objectStroke,
+        cornerColor: palette.handleCorner,
+        cornerStrokeColor: '#1a1a1a',
+        borderColor: '#d1d1d6',
+        transparentCorners: false,
+      });
+      scene.fabricRef.setCoords();
+    }
+
+    this.canvas.requestRenderAll();
+  }
+
   /** Scroll wheel zoom toward cursor (matches footer hint). */
   private bindWheelZoom(): void {
     this.canvas.on('mouse:wheel', (opt) => {
@@ -175,6 +218,47 @@ export class FabricCanvas {
       this.canvas.requestRenderAll();
     });
   };
+
+  /**
+   * Click+drag panning on blank canvas space (no modifier keys).
+   * Only activates when `opt.target` is empty so object selection/transform stays default.
+   */
+  private bindDragPan(): void {
+    this.canvas.on('mouse:down', (opt) => {
+      const evt = opt.e as MouseEvent;
+      if (opt.target) return;
+
+      this.isDraggingViewport = true;
+      this.lastPanClientX = evt.clientX;
+      this.lastPanClientY = evt.clientY;
+      this.canvas.selection = false;
+      this.canvas.defaultCursor = 'grabbing';
+      this.canvas.requestRenderAll();
+    });
+
+    this.canvas.on('mouse:move', (opt) => {
+      if (!this.isDraggingViewport) return;
+      const evt = opt.e as MouseEvent;
+      const vpt = this.canvas.viewportTransform;
+      if (!vpt) return;
+
+      vpt[4] += evt.clientX - this.lastPanClientX;
+      vpt[5] += evt.clientY - this.lastPanClientY;
+      this.lastPanClientX = evt.clientX;
+      this.lastPanClientY = evt.clientY;
+      this.canvas.requestRenderAll();
+    });
+
+    this.canvas.on('mouse:up', () => {
+      if (!this.isDraggingViewport) return;
+      const vpt = this.canvas.viewportTransform;
+      if (vpt) this.canvas.setViewportTransform(vpt);
+      this.isDraggingViewport = false;
+      this.canvas.selection = true;
+      this.canvas.defaultCursor = 'default';
+      this.canvas.requestRenderAll();
+    });
+  }
 
   private historyAdapter(): HistoryAdapter {
     return {
@@ -376,8 +460,12 @@ export class FabricCanvas {
     loops: LoopInfo[];
     totalPerimeterMm: number;
   } {
+    const active = this.canvas.getActiveObject();
     const scene = this.manager.getSelected();
-    const obj = scene?.fabricRef ?? null;
+    const obj =
+      active && !isBedObject(active)
+        ? active
+        : scene?.fabricRef ?? null;
     const includePerimeter = this.lab.isEnabled('F-47');
     const loops =
       this.lab.isEnabled('F-40') && obj ? getLoopSummary(obj, includePerimeter) : [];
@@ -392,6 +480,10 @@ export class FabricCanvas {
   private onCanvasSelection(target?: FabricObject): void {
     if (this.syncingSelection) return;
     if (!target || isBedObject(target)) {
+      this.manager.selectObject(null);
+      return;
+    }
+    if (target.type === 'activeSelection') {
       this.manager.selectObject(null);
       return;
     }
@@ -475,10 +567,63 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   }
 
+  exportSvg(): string {
+    const { width, height } = this.workArea.blockSize;
+    return exportCncLayoutSvg(this.existingUserObjects(), width, height);
+  }
+
+  clearUserWorkspace(): void {
+    this.withoutHistory(() => {
+      const ids = this.manager.objects.map((o) => o.id);
+      for (const id of ids) {
+        this.removeSceneObject(id, false);
+      }
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
+      globalHistory.reset();
+    });
+  }
+
+  async openSvgLayout(svgText: string, fileName: string): Promise<void> {
+    const parsed = await loadSvgLayoutObjects(svgText);
+    const objects = parsed.filter((obj) => !isLayoutSystemObject(obj, this.workArea));
+    if (objects.length === 0) {
+      throw new Error('No layout objects found in SVG (bed/grid filtered out)');
+    }
+
+    await this.withoutHistoryAsync(async () => {
+      this.clearUserWorkspace();
+      const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
+
+      for (let i = 0; i < objects.length; i += 1) {
+        const obj = objects[i];
+        prepareLayoutObject(obj);
+        if (this.shouldClamp()) {
+          this.clampObjectInMargins(obj);
+        }
+        const id = this.manager.newId();
+        const name =
+          objects.length === 1 ? `${baseName}.svg` : `${baseName}-${i + 1}.svg`;
+        if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+        this.canvas.add(obj);
+        this.manager.addObject({ id, name, fabricRef: obj });
+      }
+
+      if (this.lab.isEnabled('F-50') && objects.length > 0) {
+        const first = this.manager.objects[0];
+        if (first) {
+          this.manager.selectObject(first.id);
+          this.canvas.setActiveObject(first.fabricRef);
+        }
+      }
+      this.canvas.requestRenderAll();
+    });
+  }
+
   async importSvg(svgText: string, name: string, maxMm?: number): Promise<string> {
     const obj = await fabricObjectFromSvg(svgText);
     if (maxMm != null) scaleToMaxMm(obj, maxMm);
-    autoPlaceOnBed(obj, this.existingUserObjects(), this.placementLimits(), 10);
+    autoPlaceOnBed(obj, this.existingUserObjects(), this.placementLimits(), this.workArea.objectGap);
     if (this.shouldClamp()) {
       this.clampObjectInMargins(obj);
     }
@@ -496,23 +641,158 @@ export class FabricCanvas {
     return id;
   }
 
+  /** Legacy vectorizer handoff — traced_content collection, bed-center, viewport focus. */
+  async importVectorizerSvg(svgText: string, name: string): Promise<string> {
+    const obj = await loadTracedContentCollection(svgText);
+
+    const id = this.manager.newId();
+    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+
+    this.canvas.add(obj);
+
+    const limits = this.placementLimits();
+    centerObjectInPlacementLimits(obj, limits);
+    obj.setCoords();
+
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(obj);
+    }
+
+    const scene: SceneObject = { id, name, fabricRef: obj };
+    this.manager.addObject(scene);
+    this.recordAdd(scene);
+
+    this.manager.selectObject(id);
+    this.canvas.setActiveObject(obj);
+    this.focusObjectInView(obj);
+    this.canvas.requestRenderAll();
+    return id;
+  }
+
+  /** Split a traced_content collection into individual path scene objects (Ctrl+Shift+G). */
+  async ungroupTracedCollection(): Promise<boolean> {
+    const active = this.canvas.getActiveObject();
+    if (!(active instanceof Group) || !active.get(NC7_TRACED_COLLECTION_KEY)) {
+      return false;
+    }
+
+    const scene = this.manager.findByFabric(active);
+    const baseName = scene?.name?.replace(/\.svg$/i, '') ?? 'traced';
+
+    await this.withoutHistoryAsync(async () => {
+      if (scene) {
+        this.manager.removeObject(scene.id);
+      }
+      this.canvas.discardActiveObject();
+      this.canvas.remove(active);
+
+      const paths = active.removeAll();
+      active.destroy();
+
+      const added: FabricObject[] = [];
+      for (let i = 0; i < paths.length; i += 1) {
+        const path = paths[i];
+        path.set({ [NC7_TRACED_COLLECTION_KEY]: false, selectable: true, evented: true });
+        applyVectorizerEngineeringStyle(path);
+        if (this.lab.isEnabled('F-22')) attachActionControls(path);
+        this.canvas.add(path);
+
+        const id = this.manager.newId();
+        const loopName =
+          paths.length === 1 ? `${baseName}.svg` : `${baseName}-loop-${i + 1}.svg`;
+        const entry: SceneObject = { id, name: loopName, fabricRef: path };
+        this.manager.addObject(entry);
+        this.recordAdd(entry);
+        added.push(path);
+      }
+
+      if (added.length === 1) {
+        const only = this.manager.objects[this.manager.objects.length - 1];
+        if (only) {
+          this.manager.selectObject(only.id);
+          this.canvas.setActiveObject(added[0]);
+        }
+      } else if (added.length > 1) {
+        const selection = new ActiveSelection(added, { canvas: this.canvas });
+        this.canvas.setActiveObject(selection);
+      }
+
+      this.canvas.requestRenderAll();
+    });
+
+    return true;
+  }
+
   async loadDemoSvg(): Promise<void> {
-    const res = await fetch('/demo.svg');
-    if (!res.ok) throw new Error('demo.svg not found');
-    const text = await res.text();
-    await this.importSvg(text, 'demo.svg');
+    await this.loadDummyObjects();
+  }
+
+  /** Native bed-mm shapes for save/open smoke tests (no SVG import). */
+  async loadDummyObjects(): Promise<void> {
+    if (this.manager.objects.length > 0) return;
+
+    await this.withoutHistoryAsync(async () => {
+      const m = this.workArea.margins;
+      const specs: Array<{ name: string; d: string; cncType: 'closed' | 'open'; left: number; top: number }> = [
+        {
+          name: 'dummy-closed-box.svg',
+          d: `M ${m.left + 40} ${m.top + 40} L ${m.left + 240} ${m.top + 40} L ${m.left + 240} ${m.top + 180} L ${m.left + 40} ${m.top + 180} Z`,
+          cncType: 'closed',
+          left: m.left + 40,
+          top: m.top + 40,
+        },
+        {
+          name: 'dummy-open-line.svg',
+          d: `M ${m.left + 280} ${m.top + 60} L ${m.left + 480} ${m.top + 160}`,
+          cncType: 'open',
+          left: m.left + 280,
+          top: m.top + 60,
+        },
+        {
+          name: 'dummy-closed-tab.svg',
+          d: `M ${m.left + 300} ${m.top + 220} L ${m.left + 520} ${m.top + 220} L ${m.left + 520} ${m.top + 320} L ${m.left + 300} ${m.top + 320} Z`,
+          cncType: 'closed',
+          left: m.left + 300,
+          top: m.top + 220,
+        },
+      ];
+
+      for (const spec of specs) {
+        const palette = canvasPalette.getState();
+        const path = new Path(spec.d, {
+          fill: 'transparent',
+          stroke: palette.objectStroke,
+          strokeWidth: 2,
+          originX: 'left',
+          originY: 'top',
+          cornerColor: palette.handleCorner,
+          cornerStrokeColor: '#1a1a1a',
+          borderColor: '#d1d1d6',
+          transparentCorners: false,
+        });
+        path.set('cncType', spec.cncType);
+        normalizeFabricObjectToCncFrame(path);
+        path.set({ left: spec.left, top: spec.top });
+        path.setCoords();
+
+        const id = this.manager.newId();
+        if (this.lab.isEnabled('F-22')) attachActionControls(path);
+        this.canvas.add(path);
+        this.manager.addObject({ id, name: spec.name, fabricRef: path });
+      }
+
+      if (this.lab.isEnabled('F-50') && this.manager.objects.length > 0) {
+        const first = this.manager.objects[0];
+        this.manager.selectObject(first.id);
+        this.canvas.setActiveObject(first.fabricRef);
+      }
+
+      this.canvas.requestRenderAll();
+    });
   }
 
   async loadStartupDemos(): Promise<void> {
-    if (this.manager.objects.some((o) => o.name.startsWith('demo-'))) return;
-    const res = await fetch('/demo.svg');
-    if (!res.ok) return;
-    const text = await res.text();
-    await this.withoutHistoryAsync(async () => {
-      for (let i = 0; i < DEMO_SIZES_MM.length; i += 1) {
-        await this.importSvg(text, `demo-${i + 1}.svg`, DEMO_SIZES_MM[i]);
-      }
-    });
+    await this.loadDummyObjects();
   }
 
   syncDimensions = (): void => {
@@ -534,21 +814,50 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   }
 
+  /** Pan/zoom viewport so a freshly imported object is visible on the foam bed. */
+  focusObjectInView(obj: FabricObject): void {
+    obj.setCoords();
+    this.focusBoundsInView(getCncBoundingRect(obj));
+  }
+
+  focusBoundsInView(bounds: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }): void {
+    const canvasW = this.canvas.getWidth();
+    const canvasH = this.canvas.getHeight();
+    const padding = 72;
+    const zoom = Math.min(
+      (canvasW - padding * 2) / Math.max(bounds.width, 1),
+      (canvasH - padding * 2) / Math.max(bounds.height, 1),
+      2.5
+    );
+    const cx = bounds.left + bounds.width / 2;
+    const cy = bounds.top + bounds.height / 2;
+    const tx = canvasW / 2 - cx * zoom;
+    const ty = canvasH / 2 - cy * zoom;
+    this.canvas.setViewportTransform([zoom, 0, 0, zoom, tx, ty]);
+    this.canvas.requestRenderAll();
+  }
+
   addRectangle(): FabricObject {
     this.rectCount += 1;
     const m = this.workArea.margins;
+    const palette = canvasPalette.getState();
     const rect = new Rect({
       left: m.left + 40 + (this.rectCount % 5) * 24,
       top: m.top + 40 + (this.rectCount % 5) * 18,
-      fill: '#6366f1',
+      fill: 'rgba(245, 245, 247, 0.08)',
       width: 160,
       height: 100,
       opacity: 0.92,
-      stroke: '#a5b4fc',
-      strokeWidth: 1,
-      cornerColor: '#ffffff',
-      cornerStrokeColor: '#6366f1',
-      borderColor: '#6366f1',
+      stroke: palette.objectStroke,
+      strokeWidth: 2,
+      cornerColor: palette.handleCorner,
+      cornerStrokeColor: '#1a1a1a',
+      borderColor: '#d1d1d6',
       transparentCorners: false,
       hasRotatingPoint: this.lab.isEnabled('F-21'),
     });
@@ -578,6 +887,22 @@ export class FabricCanvas {
   }
 
   getActiveObjectName(): string | null {
+    const active = this.canvas.getActiveObject();
+    if (active && !isBedObject(active)) {
+      if (active.type === 'activeSelection') {
+        const selection = active as ActiveSelection;
+        const items = selection.getObjects();
+        if (items.length === 0) return null;
+        const firstName = items[0].get('sceneName') as string | undefined;
+        if (firstName && items.length > 1) {
+          const base = firstName.replace(/-loop-\d+\.svg$/i, '');
+          return `${base}.svg`;
+        }
+        return firstName ?? null;
+      }
+      const scene = this.manager.findByFabric(active);
+      return scene?.name ?? (active.get('sceneName') as string | undefined) ?? null;
+    }
     const scene = this.manager.getSelected();
     return scene?.name ?? null;
   }
@@ -590,6 +915,8 @@ export class FabricCanvas {
     window.removeEventListener('resize', this.onWindowResize);
     this.resizeObserver?.disconnect();
     this.historyUnsub?.();
+    this.paletteUnsub?.();
     this.canvas.dispose();
   }
 }
+

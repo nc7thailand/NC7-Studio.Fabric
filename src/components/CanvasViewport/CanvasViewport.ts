@@ -2,13 +2,22 @@ import { labOptions } from '../../modules/devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../../modules/config/WorkAreaConfig';
 import { workAreaManager, type WorkAreaManager } from '../../modules/canvas/WorkAreaManager';
 import { FabricCanvas, type TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
+import {
+  downloadSvgFile,
+  SVG_LAYOUT_EXPORT_FILENAME,
+} from '../../modules/svg/svgImport';
 import type { HistoryState } from '../../modules/history/GlobalHistoryStack';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
 export interface CanvasViewportHandle {
   manager: WorkAreaManager;
+  fabric: FabricCanvas;
   importSvgFile: (file: File) => Promise<string | null>;
   importSvgText: (svgText: string, name: string) => Promise<string | null>;
+  importVectorizerSvg: (svgText: string, name: string) => Promise<string | null>;
+  exportSvg: () => string;
+  saveSvgDownload: (filename?: string) => void;
+  openSvgLayoutFile: (file: File) => Promise<void>;
   loadDemoSvg: () => Promise<void>;
   addRectangle: () => void;
   removeObject: (id: string) => void;
@@ -73,11 +82,21 @@ export function mountCanvasViewport(
 
   return {
     manager,
+    fabric,
     importSvgFile: async (file: File) => {
       const text = await file.text();
       return fabric.importSvg(text, file.name);
     },
     importSvgText: (svgText, name) => fabric.importSvg(svgText, name),
+    importVectorizerSvg: (svgText, name) => fabric.importVectorizerSvg(svgText, name),
+    exportSvg: () => fabric.exportSvg(),
+    saveSvgDownload: (filename = SVG_LAYOUT_EXPORT_FILENAME) => {
+      downloadSvgFile(fabric.exportSvg(), filename);
+    },
+    openSvgLayoutFile: async (file: File) => {
+      const text = await file.text();
+      await fabric.openSvgLayout(text, file.name);
+    },
     loadDemoSvg: () => fabric.loadDemoSvg(),
     addRectangle: () => fabric.addRectangle(),
     removeObject: (id) => fabric.removeSceneObject(id),

@@ -1,0 +1,1 @@
+export { FabricEditorShell } from './FabricEditorShell';

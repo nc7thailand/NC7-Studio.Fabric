@@ -216,8 +216,8 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
       },
       {
         id: 'V-01',
-        label: 'VectorCore pipeline',
-        detail: 'Image → esm-potrace-wasm trace → SVG import to canvas.',
+        label: 'Legacy vectorizer handoff',
+        detail: 'Import SVG from :3009 vectorizer embed via localStorage buffer.',
         status: 'live',
         defaultEnabled: true,
       },

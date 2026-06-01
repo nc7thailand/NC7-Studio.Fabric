@@ -1,4 +1,4 @@
-import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
+import { workAreaConfig, type StudioOrigin } from '../../modules/config/WorkAreaConfig';
 import type { PanelId } from '../StudioShell/toolbarIcons';
 import { icons } from '../StudioShell/toolbarIcons';
 import {
@@ -8,26 +8,29 @@ import {
   renderToolsPanel,
   renderVectorizerPanel,
   type ObjectPanelData,
-  type VectorizerPanelState,
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
 import type { TransformOverlayDetail } from '../../modules/canvas/FabricCanvas';
-import { vectorCore } from '../../modules/vectorizer/VectorCore';
 import { labOptions } from '../../modules/devlab/LabOptions';
+import {
+  clearPendingSvg,
+  readPendingSvg,
+} from '../../modules/vectorizer/pendingSvgHandoff';
+import {
+  bindVectorizerStorageHandoffListener,
+  type VectorizerExportData,
+} from '../../modules/vectorizer/vectorizerPostMessage';
 
 export class StudioShell {
   private root: HTMLElement;
   private openPanel: PanelId = null;
   private menuOpen = false;
   private canvas: CanvasViewportHandle | null = null;
-  private vectorizerState: VectorizerPanelState = {
-    message: null,
-    status: 'idle',
-    config: vectorCore.getConfig(),
-  };
   private transformOverlay: TransformOverlayDetail | null = null;
   private setupUnsub: (() => void) | null = null;
+  private vectorizerStorageUnsub: (() => void) | null = null;
+  private vectorizerImportBusy = false;
   private nestingPanelOpen = false;
 
   constructor(private readonly mountSelector = '#app') {
@@ -41,7 +44,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Phase 6 V-01 potrace WASM vectorizer — port 3010');
+    console.info('[NC7 Studio.Fabric] Legacy vectorizer embed at /vectorcore — port 3010');
   }
 
   private renderLayout(): string {
@@ -66,7 +69,7 @@ export class StudioShell {
 
         <section id="Pnl-Vectorizer" class="floating-panel" role="dialog" aria-label="Trace image" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          <div id="vectorizer-panel-host">${renderVectorizerPanel(this.vectorizerState)}</div>
+          <div id="vectorizer-panel-host">${renderVectorizerPanel()}</div>
         </section>
 
         <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
@@ -102,8 +105,11 @@ export class StudioShell {
                   </div>
                 </div>
               </div>
+              <input type="file" id="svg-layout-open-input" accept=".svg,image/svg+xml" hidden aria-hidden="true" />
               <div id="action-menu" class="action-menu" role="menu" hidden>
                 <button type="button" class="action-menu-item" data-open-panel="file" role="menuitem">File</button>
+                <button type="button" class="action-menu-item" id="btn-open-svg-layout" role="menuitem">Open SVG File</button>
+                <button type="button" class="action-menu-item" id="btn-save-svg" role="menuitem">Save SVG</button>
                 <button type="button" class="action-menu-item" disabled role="menuitem">View (soon)</button>
                 <button type="button" class="action-menu-item" data-open-panel="tools" role="menuitem">Tools</button>
                 <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="setup" role="menuitem">Setup</button>
@@ -156,6 +162,14 @@ export class StudioShell {
       },
     });
 
+    void this.importPendingVectorCoreSvg();
+
+    this.vectorizerStorageUnsub = bindVectorizerStorageHandoffListener((data) => {
+      void this.importVectorizerSvg(data);
+    });
+
+    this.bindVectorCoreLauncher(this.root);
+
     bindDevLabPanel(this.root);
 
     this.canvas.onSceneChange(() => {
@@ -180,7 +194,6 @@ export class StudioShell {
     this.updateSelectionUi();
     this.updateToolbarUi();
     this.bindSetupPanel();
-    this.refreshVectorizerPanel();
 
     this.setupUnsub = workAreaConfig.subscribe(() => {
       this.updateMaterialLabel();
@@ -190,6 +203,36 @@ export class StudioShell {
     this.root.querySelector('#btn-menu')?.addEventListener('click', () => {
       this.menuOpen = !this.menuOpen;
       this.syncMenuUi();
+    });
+
+    const svgLayoutInput = this.root.querySelector('#svg-layout-open-input');
+    this.root.querySelector('#btn-open-svg-layout')?.addEventListener('click', () => {
+      this.menuOpen = false;
+      this.syncMenuUi();
+      if (svgLayoutInput instanceof HTMLInputElement) {
+        svgLayoutInput.value = '';
+        svgLayoutInput.click();
+      }
+    });
+
+    svgLayoutInput?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+      void (async () => {
+        try {
+          await this.canvas?.openSvgLayoutFile(file);
+        } catch (err) {
+          console.error('[StudioShell] open SVG layout failed', err);
+        }
+      })();
+    });
+
+    this.root.querySelector('#btn-save-svg')?.addEventListener('click', () => {
+      this.menuOpen = false;
+      this.syncMenuUi();
+      this.canvas?.saveSvgDownload();
     });
 
     this.root.querySelector('#btn-file')?.addEventListener('click', () => {
@@ -291,6 +334,12 @@ export class StudioShell {
         return;
       }
 
+      if (e.key === 'g' && e.shiftKey && labOptions.isEnabled('V-01')) {
+        e.preventDefault();
+        void this.canvas?.ungroupTracedCollection();
+        return;
+      }
+
       if (e.key === 'z' && !e.shiftKey && labOptions.isEnabled('CORE-UNDO')) {
         e.preventDefault();
         void this.canvas?.undo();
@@ -309,6 +358,55 @@ export class StudioShell {
     this.syncMenuUi();
     this.syncPanelsUi();
     this.syncNestingPanelUi();
+  }
+
+  /** Import traced SVG from vectorizer tab via localStorage `storage` event. */
+  async importVectorizerSvg(data: VectorizerExportData): Promise<void> {
+    if (!this.canvas || this.vectorizerImportBusy) return;
+    if (!labOptions.isEnabled('V-01')) {
+      console.warn('[StudioShell] V-01 legacy vectorizer handoff is disabled in Dev Lab.');
+      return;
+    }
+
+    this.vectorizerImportBusy = true;
+    try {
+      await this.canvas.importVectorizerSvg(data.svgText, data.name);
+      this.updateSelectionUi();
+      this.refreshFilePanel();
+      this.refreshObjectPanel();
+    } catch (err) {
+      console.error('[StudioShell] vectorizer SVG import failed', err);
+    } finally {
+      clearPendingSvg();
+      this.vectorizerImportBusy = false;
+    }
+  }
+
+  private bindVectorCoreLauncher(scope: ParentNode): void {
+    scope.querySelectorAll('[data-open-vectorcore]').forEach((el) => {
+      el.addEventListener('click', () => {
+        this.menuOpen = false;
+        this.closePanels();
+        window.open('/vectorcore', '_blank', 'noopener,noreferrer');
+      });
+    });
+  }
+
+  private async importPendingVectorCoreSvg(): Promise<void> {
+    if (!this.canvas) return;
+    if (typeof window === 'undefined') return;
+
+    const payload = readPendingSvg();
+    if (!payload?.svgText) return;
+
+    try {
+      await this.importVectorizerSvg({
+        svgText: payload.svgText,
+        name: payload.name ?? 'traced_image.svg',
+      });
+    } finally {
+      clearPendingSvg();
+    }
   }
 
   private toggleNestingPanel(): void {
@@ -391,7 +489,6 @@ export class StudioShell {
     });
 
     if (this.openPanel === 'setup') this.refreshSetupPanel();
-    if (this.openPanel === 'vectorizer') this.refreshVectorizerPanel();
 
     this.root.querySelector('#btn-file')?.classList.toggle('active', this.openPanel === 'file');
     this.root.querySelector('#btn-tools')?.classList.toggle('active', this.openPanel === 'tools');
@@ -527,18 +624,21 @@ export class StudioShell {
 
     const applyFromInputs = (fitHome: boolean): void => {
       const cfg = workAreaConfig.getState();
-      workAreaConfig.applySetup(
-        {
+      workAreaConfig.applySetup({
+        blockSize: {
           width: parseNum('setup-width', cfg.blockSize.width),
           height: parseNum('setup-height', cfg.blockSize.height),
         },
-        {
+        margins: {
           left: parseNum('setup-margin-left', cfg.margins.left),
           right: parseNum('setup-margin-right', cfg.margins.right),
           top: parseNum('setup-margin-top', cfg.margins.top),
           bottom: parseNum('setup-margin-bottom', cfg.margins.bottom),
-        }
-      );
+        },
+        objectGap: parseNum('setup-object-gap', cfg.objectGap),
+        feedRate: parseNum('setup-feed-rate', cfg.feedRate),
+        dwellTime: parseNum('setup-dwell-time', cfg.dwellTime),
+      });
       this.updateMaterialLabel();
       if (fitHome) this.canvas?.resetView();
     };
@@ -546,92 +646,33 @@ export class StudioShell {
     const onFieldChange = (): void => applyFromInputs(false);
 
     scope.querySelectorAll(
-      '#setup-width, #setup-height, #setup-margin-left, #setup-margin-right, #setup-margin-top, #setup-margin-bottom'
+      '#setup-width, #setup-height, #setup-margin-left, #setup-margin-right, #setup-margin-top, #setup-margin-bottom, #setup-object-gap, #setup-feed-rate, #setup-dwell-time'
     ).forEach((el) => {
       el.addEventListener('change', onFieldChange);
     });
 
+    scope.querySelectorAll('[data-setup-unit]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const unit = btn.getAttribute('data-setup-unit');
+        if (unit === 'mm' || unit === 'inches') {
+          workAreaConfig.setUnit(unit);
+          this.updateMaterialLabel();
+          this.refreshSetupPanel();
+        }
+      });
+    });
+
+    scope.querySelectorAll('[data-setup-origin]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const origin = btn.getAttribute('data-setup-origin') as StudioOrigin | null;
+        if (!origin) return;
+        workAreaConfig.setOrigin(origin);
+        this.refreshSetupPanel();
+      });
+    });
+
     scope.querySelector('#btn-setup-apply-home')?.addEventListener('click', () => {
       applyFromInputs(true);
-    });
-  }
-
-  private refreshVectorizerPanel(): void {
-    const host = this.root.querySelector('#vectorizer-panel-host');
-    if (!(host instanceof HTMLElement)) return;
-    this.vectorizerState.config = vectorCore.getConfig();
-    host.innerHTML = renderVectorizerPanel(this.vectorizerState);
-    this.bindVectorizerPanel(host);
-  }
-
-  private setVectorizerState(partial: Partial<VectorizerPanelState>): void {
-    this.vectorizerState = { ...this.vectorizerState, ...partial };
-    const resultEl = this.root.querySelector('#vectorizer-result');
-    if (resultEl instanceof HTMLElement) {
-      const { message, status } = this.vectorizerState;
-      resultEl.textContent =
-        message ??
-        (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
-      resultEl.classList.remove('is-empty', 'is-processing', 'is-done', 'is-error');
-      if (status === 'processing') resultEl.classList.add('is-processing');
-      else if (status === 'done') resultEl.classList.add('is-done');
-      else if (status === 'error') resultEl.classList.add('is-error');
-      else if (!message) resultEl.classList.add('is-empty');
-    }
-  }
-
-  private bindVectorizerPanel(scope: ParentNode): void {
-    const thresholdEl = scope.querySelector('#trace-threshold');
-    const thresholdValueEl = scope.querySelector('#trace-threshold-value');
-    const turdEl = scope.querySelector('#trace-turdsize');
-
-    thresholdEl?.addEventListener('input', (e) => {
-      const input = e.target as HTMLInputElement;
-      const n = parseInt(input.value, 10);
-      if (Number.isFinite(n)) {
-        vectorCore.setConfig({ threshold: n });
-        if (thresholdValueEl) thresholdValueEl.textContent = String(n);
-      }
-    });
-
-    turdEl?.addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      const n = parseInt(input.value, 10);
-      if (Number.isFinite(n) && n >= 0) {
-        vectorCore.setConfig({ turdSize: n });
-      }
-    });
-
-    scope.querySelector('#trace-image-upload')?.addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      const file = input.files?.[0];
-      input.value = '';
-      if (!file) return;
-
-      if (!labOptions.isEnabled('V-01')) {
-        this.setVectorizerState({
-          status: 'error',
-          message: 'VectorCore pipeline (V-01) is disabled in Dev Lab.',
-        });
-        return;
-      }
-
-      void (async () => {
-        this.setVectorizerState({ status: 'processing', message: 'Starting trace…' });
-        const result = await vectorCore.traceImage(file, (msg) => {
-          this.setVectorizerState({ status: 'processing', message: msg });
-        });
-
-        this.setVectorizerState({
-          status: result.job.status === 'error' ? 'error' : 'done',
-          message: result.summary,
-        });
-
-        if (result.svgText && this.canvas) {
-          const name = file.name.replace(/\.[^.]+$/, '') + '.svg';
-          await this.canvas.importSvgText(result.svgText, name);
-        }
-      })();
     });
   }
 

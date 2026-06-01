@@ -1543,6 +1543,20 @@ body.dev-route {
   display: block;
 }
 
+.vectorcore-embed {
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  background: #080c14;
+}
+
+.vectorcore-embed-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
 .file-list {
   list-style: none;
   margin: 0;
@@ -1563,30 +1577,121 @@ body.dev-route {
   margin-bottom: 12px;
 }
 
+.devlab-panel {
+  background: rgba(18, 19, 26, 0.86);
+  border: 1px solid #2a2d3a;
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  backdrop-filter: blur(10px);
+}
+
+.devlab-panel .tools-panel-title {
+  color: #e4e6eb;
+}
+
+.devlab-panel .section-hint {
+  color: rgba(228, 230, 235, 0.72);
+}
+
 .devlab-row {
   display: flex;
   gap: 10px;
   align-items: flex-start;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: rgba(228, 230, 235, 0.78);
   cursor: pointer;
 }
 
+.devlab-row input[type='checkbox'] {
+  accent-color: #c3b5fd;
+}
+
 .devlab-row strong {
-  color: var(--text-primary);
+  color: #e4e6eb;
   display: block;
 }
 
 .devlab-row small {
   display: block;
-  color: var(--text-muted);
+  color: rgba(228, 230, 235, 0.6);
   margin-top: 2px;
+}
+
+/* Chic neon accents for engineering identifiers */
+.devlab-row strong {
+  letter-spacing: 0.02em;
+}
+
+/* Accent per feature id (closed/open engineering vibe) */
+.devlab-row strong {
+  color: #c3b5fd;
+}
+.devlab-row:has(input:checked) strong {
+  color: #8ce8c5;
 }
 
 .devlab-actions {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.devlab-palette {
+  margin: 8px 0 14px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(42, 45, 58, 0.8);
+  background: rgba(10, 11, 16, 0.35);
+}
+
+.devlab-subtitle {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: rgba(228, 230, 235, 0.82);
+}
+
+.devlab-palette-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(42, 45, 58, 0.55);
+}
+
+.devlab-palette-row:first-of-type {
+  border-top: none;
+}
+
+.devlab-palette-label {
+  font-size: 12px;
+  color: rgba(228, 230, 235, 0.72);
+}
+
+.devlab-swatch-group {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.devlab-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(209, 209, 214, 0.35);
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35) inset;
+}
+
+.devlab-swatch.active {
+  border-color: rgba(245, 245, 247, 0.85);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35) inset,
+    0 0 0 3px rgba(195, 181, 253, 0.25);
 }
 
 .upload-label svg {

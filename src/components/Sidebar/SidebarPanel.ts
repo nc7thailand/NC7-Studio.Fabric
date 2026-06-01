@@ -1,6 +1,5 @@
 import { icons } from '../StudioShell/toolbarIcons';
-import { workAreaConfig } from '../../modules/config/WorkAreaConfig';
-import type { VectorCoreConfig } from '../../modules/vectorizer/VectorCore';
+import { workAreaConfig, STUDIO_ORIGINS, formatOriginLabel } from '../../modules/config/WorkAreaConfig';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
@@ -43,7 +42,7 @@ export function renderFileSidebar(
     <aside class="panel-sidebar">
       <div class="sidebar-header">
         <h1 class="logo-text">NC7 Studio<span class="logo-accent">.Fabric</span></h1>
-        <span class="version-tag">Phase 6 · potrace WASM</span>
+        <span class="version-tag">Fabric · SVG layout</span>
       </div>
       <div class="tabs-nav">
         <button type="button" class="tab-btn active" data-tab="files">
@@ -60,7 +59,7 @@ export function renderFileSidebar(
           </label>
           <input id="svg-upload" type="file" accept=".svg" multiple class="hidden-file-input" />
         </div>
-        <button type="button" id="btn-load-demo-sidebar" class="tools-action-btn">Load Demo SVG</button>
+        <button type="button" id="btn-load-demo-sidebar" class="tools-action-btn">Load Dummy Layout</button>
         ${objectRows}
       </div>
     </aside>
@@ -74,7 +73,7 @@ export function renderToolsPanel(): string {
       <div class="tools-panel-actions">
         <button type="button" class="tools-action-btn" data-open-panel="setup">Material Setup</button>
         <button type="button" class="tools-action-btn" disabled>Remote Access (soon)</button>
-        <button type="button" class="tools-action-btn" data-open-panel="vectorizer">Trace Image</button>
+        <button type="button" class="tools-action-btn" data-open-vectorcore>Trace Image (Legacy Vectorizer)</button>
         <button type="button" class="tools-action-btn" data-open-panel="devlab">Canvas Feature Lab</button>
       </div>
     </div>
@@ -84,32 +83,49 @@ export function renderToolsPanel(): string {
 export function renderSetupPanel(): string {
   const cfg = workAreaConfig.getState();
   const u = cfg.unit;
+  const originDots = STUDIO_ORIGINS.map(
+    (pos) =>
+      `<button type="button" class="origin-dot ${cfg.origin === pos ? 'active' : ''}" data-setup-origin="${pos}" title="${formatOriginLabel(pos)}" aria-label="${formatOriginLabel(pos)}"></button>`
+  ).join('');
+
   return `
     <div class="panel-sidebar setup-panel-host">
       <div class="sidebar-header">
         <h1 class="logo-text">Material <span class="logo-accent">Setup</span></h1>
         <span class="version-tag">Bed size &amp; margins</span>
       </div>
-      <div class="sidebar-content">
-        <h2 class="section-title-sm">Material size</h2>
+      <div class="sidebar-content setup-panel">
+        <h2 class="section-title">Material Size</h2>
+
+        <div class="input-group">
+          <label>Measurement Unit</label>
+          <div class="unit-toggle" role="group" aria-label="Measurement unit">
+            <button type="button" class="${cfg.unit === 'mm' ? 'active' : ''}" data-setup-unit="mm">Metric (mm)</button>
+            <button type="button" class="${cfg.unit === 'inches' ? 'active' : ''}" data-setup-unit="inches">Imperial (in)</button>
+          </div>
+        </div>
+
         <div class="input-grid">
           <div class="input-group">
-            <label for="setup-width">Block width</label>
+            <label for="setup-width">Block Width (X)</label>
             <div class="input-wrapper">
               <input id="setup-width" type="number" min="1" step="1" value="${cfg.blockSize.width}" />
               <span class="unit-label">${u}</span>
             </div>
           </div>
           <div class="input-group">
-            <label for="setup-height">Block height</label>
+            <label for="setup-height">Block Height (Y)</label>
             <div class="input-wrapper">
               <input id="setup-height" type="number" min="1" step="1" value="${cfg.blockSize.height}" />
               <span class="unit-label">${u}</span>
             </div>
           </div>
         </div>
-        <h2 class="section-title-sm">Margins</h2>
-        <p class="section-hint">Clearance inset from each edge. Red dashed guides update live.</p>
+
+        <h2 class="section-title mt-4">Material Margins</h2>
+        <p class="section-hint">
+          Clearance inset from each material edge. Red dashed box moves with the canvas; negative values are allowed.
+        </p>
         <div class="input-grid">
           <div class="input-group">
             <label for="setup-margin-left">Left</label>
@@ -140,73 +156,63 @@ export function renderSetupPanel(): string {
             </div>
           </div>
         </div>
-        <button type="button" id="btn-setup-apply-home" class="tools-action-btn">Apply &amp; fit home view</button>
+
+        <div class="input-group mt-4">
+          <label for="setup-object-gap">Object Gap</label>
+          <div class="input-wrapper">
+            <input id="setup-object-gap" type="number" min="0" step="1" value="${cfg.objectGap}" />
+            <span class="unit-label">${u}</span>
+          </div>
+          <p class="section-hint">Space between objects when importing SVGs (auto-place to the right).</p>
+        </div>
+
+        <div class="input-group mt-4">
+          <label>Work Area Origin</label>
+          <div class="origin-selector-container">
+            <div class="origin-grid" role="group" aria-label="Work area origin">
+              ${originDots}
+            </div>
+            <div class="origin-current-label">
+              Origin: <strong>${formatOriginLabel(cfg.origin)}</strong>
+            </div>
+          </div>
+        </div>
+
+        <h2 class="section-title mt-6">Hardware Speeds</h2>
+        <div class="input-group">
+          <label for="setup-feed-rate">Cutting Speed (Feed Rate)</label>
+          <div class="input-wrapper">
+            <input id="setup-feed-rate" type="number" min="1" step="1" value="${cfg.feedRate}" />
+            <span class="unit-label">${u}/min</span>
+          </div>
+        </div>
+        <div class="input-group">
+          <label for="setup-dwell-time">Pre-Heat Time</label>
+          <div class="input-wrapper">
+            <input id="setup-dwell-time" type="number" min="0" step="0.1" value="${cfg.dwellTime}" />
+            <span class="unit-label">sec</span>
+          </div>
+        </div>
+
+        <button type="button" id="btn-setup-apply-home" class="tools-action-btn mt-4">Apply &amp; fit home view</button>
       </div>
     </div>
   `;
 }
 
-export type VectorizerPanelStatus = 'idle' | 'processing' | 'done' | 'error';
-
-export interface VectorizerPanelState {
-  message: string | null;
-  status: VectorizerPanelStatus;
-  config: VectorCoreConfig;
-}
-
-export function renderVectorizerPanel(state: VectorizerPanelState): string {
-  const { message, status, config } = state;
-  const statusClass =
-    status === 'processing'
-      ? 'is-processing'
-      : status === 'done'
-        ? 'is-done'
-        : status === 'error'
-          ? 'is-error'
-          : message
-            ? ''
-            : 'is-empty';
-  const displayMessage =
-    message ??
-    (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
-
+export function renderVectorizerPanel(): string {
   return `
     <div class="panel-sidebar vectorizer-panel-host">
       <div class="sidebar-header">
         <h1 class="logo-text">Trace <span class="logo-accent">Image</span></h1>
-        <span class="version-tag">VectorCore · V-01 WASM</span>
+        <span class="version-tag">Legacy · :3009</span>
       </div>
       <div class="sidebar-content">
         <p class="section-hint">
-          Upload a raster image — potrace WASM traces paths and imports SVG to the foam bed.
-          F-50 auto-selects the new object when enabled in Dev Lab.
+          Opens the production vectorizer from FoamArt Studio (:3009) inside NC7 Studio.Fabric.
+          Trace your image, then choose <strong>Send to Foam Bed Canvas</strong> to import SVG paths here.
         </p>
-        <div class="input-grid">
-          <div class="input-group">
-            <label for="trace-threshold">Binarize threshold</label>
-            <div class="input-wrapper">
-              <input id="trace-threshold" type="range" min="10" max="240" step="1" value="${config.threshold}" ${status === 'processing' ? 'disabled' : ''} />
-              <span class="unit-label" id="trace-threshold-value">${config.threshold}</span>
-            </div>
-          </div>
-          <div class="input-group">
-            <label for="trace-turdsize">Turd size (despeckle)</label>
-            <div class="input-wrapper">
-              <input id="trace-turdsize" type="number" min="0" max="50" step="1" value="${config.turdSize}" ${status === 'processing' ? 'disabled' : ''} />
-            </div>
-          </div>
-        </div>
-        <div class="upload-zone">
-          <label for="trace-image-upload" class="upload-label ${status === 'processing' ? 'is-disabled' : ''}">
-            ${icons.upload}
-            <span class="upload-title">Choose image (PNG, JPG)</span>
-            <span class="upload-desc">${status === 'processing' ? 'Tracing in progress…' : 'WASM potrace → SVG import'}</span>
-          </label>
-          <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
-        </div>
-        <div id="vectorizer-result" class="vectorizer-result ${statusClass}" role="status" aria-live="polite">
-          ${displayMessage}
-        </div>
+        <button type="button" class="tools-action-btn" data-open-vectorcore>Open Legacy Vectorizer</button>
       </div>
     </div>
   `;
