@@ -39,18 +39,16 @@ Use **http://100.64.95.27:3010** from Air/phone (Tailscale). Port **3010** requi
 
 ---
 
-## GitHub save game (optional)
+## GitHub save game
 
-Repo is **local only** on Mini through Phase 6. To back up:
+**Live:** https://github.com/nc7thailand/NC7-Studio.Fabric  
+**Remote:** `git@github.com:nc7thailand/NC7-Studio.Fabric.git` (SSH)  
+**Pushed:** `99d7891` — Phase 7 cutover prep (2026-06-01, AG Mini)
 
 ```bash
 cd ~/Documents/GitHub/NC7-Studio.Fabric
-# create repo NC7-Studio.Fabric on GitHub first, then:
-git remote add origin git@github.com:YOUR_ORG/NC7-Studio.Fabric.git
-git push -u origin main
+git pull origin main
 ```
-
-Ask CRA: `[RUN] push fabric to github` when ready.
 
 ---
 

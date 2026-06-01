@@ -14,7 +14,7 @@ Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 | Parity checklist 100% | ✅ |
 | [CUTOVER.md](CUTOVER.md) BK sign-off guide | ✅ |
 | `.cursor/` Auto-review permissions | ✅ committed |
-| GitHub push | ⬜ BK asks when ready |
+| GitHub push | ✅ [nc7thailand/NC7-Studio.Fabric](https://github.com/nc7thailand/NC7-Studio.Fabric) |
 
 ---
 
@@ -123,10 +123,10 @@ Track against **Three.js** `AG-NC7-FoamArt-Studio` (`canvasFeatureFlags.js`).
 
 | Repo | Role | Last known good |
 |------|------|-----------------|
-| `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · `44aae16` |
-| `NC7-Studio.Fabric` | Fabric engine (this repo) | local · Phase 7 |
+| `AG-NC7-FoamArt-Studio` | Production (Three.js) | GitHub `main` · port **3009** |
+| `NC7-Studio.Fabric` | Fabric engine (this repo) | GitHub `main` · `99d7891` · port **3010** |
 
-**GitHub repo name (suggested):** `NC7-Studio.Fabric`
+**Fabric GitHub:** https://github.com/nc7thailand/NC7-Studio.Fabric
 
 ---
 
