@@ -1000,15 +1000,53 @@ body.dev-route {
   border-color: rgba(245, 158, 11, 0.35);
 }
 
-.toolbar-nesting-group {
+.toolbar-nesting-anchor {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+}
+
+.nesting-popup {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 140;
+  min-width: max-content;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(13, 18, 30, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.nesting-popup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.nesting-popup .nesting-run-btn {
+  width: auto;
   margin-left: 4px;
-  padding: 4px 8px 4px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.22);
+  color: #e0e7ff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.nesting-popup .nesting-run-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.35);
+  border-color: rgba(129, 140, 248, 0.65);
 }
 
 .toolbar-gap-label {
@@ -1288,11 +1326,6 @@ body.dev-route {
   .canvas-overlay-top .action-toolbar {
     max-width: 100%;
     flex: 1 1 100%;
-  }
-
-  .toolbar-nesting-group {
-    flex: 1 1 100%;
-    justify-content: flex-start;
   }
 }
 

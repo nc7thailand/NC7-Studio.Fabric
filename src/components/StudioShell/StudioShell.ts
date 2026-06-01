@@ -28,6 +28,7 @@ export class StudioShell {
   };
   private transformOverlay: TransformOverlayDetail | null = null;
   private setupUnsub: (() => void) | null = null;
+  private nestingPanelOpen = false;
 
   constructor(private readonly mountSelector = '#app') {
     const el = document.querySelector(mountSelector);
@@ -90,11 +91,16 @@ export class StudioShell {
               <button type="button" id="btn-menu" class="action-btn" title="Menu" aria-label="Menu">${icons.menu}</button>
               <button type="button" id="btn-undo" class="action-btn action-btn--undo is-disabled" disabled title="Nothing to undo" aria-label="Undo">${icons.undo}</button>
               <button type="button" id="btn-redo" class="action-btn action-btn--redo is-disabled" disabled title="Nothing to redo" aria-label="Redo">${icons.redo}</button>
-              <div class="toolbar-nesting-group" role="group" aria-label="Auto nesting">
-                <label class="toolbar-gap-label" for="toolbar-nesting-gap">Gap</label>
-                <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" min="0" step="0.01" value="10.00" aria-label="Nesting gap mm" />
-                <span class="toolbar-gap-unit">mm</span>
-                <button type="button" id="btn-nest" class="action-btn action-btn--nest is-disabled" disabled title="Auto nest (need 2+ objects)" aria-label="Auto Nesting">${icons.nest}</button>
+              <div class="toolbar-nesting-anchor">
+                <button type="button" id="btn-nest-toggle" class="action-btn action-btn--nest is-disabled" disabled title="Auto nest (need 2+ objects)" aria-label="Auto nesting" aria-expanded="false" aria-controls="nesting-popup">${icons.nest}</button>
+                <div id="nesting-popup" class="nesting-popup" role="dialog" aria-label="Auto nesting settings" hidden>
+                  <div class="nesting-popup-row">
+                    <label class="toolbar-gap-label" for="toolbar-nesting-gap">Gap</label>
+                    <input id="toolbar-nesting-gap" class="toolbar-gap-input" type="number" min="0" step="0.01" value="10.00" aria-label="Nesting gap mm" />
+                    <span class="toolbar-gap-unit">mm</span>
+                    <button type="button" id="btn-nest-run" class="nesting-run-btn" disabled>Auto Nesting</button>
+                  </div>
+                </div>
               </div>
               <div id="action-menu" class="action-menu" role="menu" hidden>
                 <button type="button" class="action-menu-item" data-open-panel="file" role="menuitem">File</button>
@@ -208,11 +214,27 @@ export class StudioShell {
       void this.canvas?.redo();
     });
 
-    this.root.querySelector('#btn-nest')?.addEventListener('click', () => {
+    this.root.querySelector('#btn-nest-toggle')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.menuOpen = false;
+      this.syncMenuUi();
+      this.toggleNestingPanel();
+    });
+
+    this.root.querySelector('#btn-nest-run')?.addEventListener('click', () => {
       const gap = this.readNestingGap();
       const result = this.canvas?.runAutoNesting(gap);
       if (result && !result.ok && result.reason) {
         console.warn('[StudioShell] auto-nest:', result.reason);
+      }
+      if (result?.ok) this.closeNestingPanel();
+    });
+
+    this.root.addEventListener('mousedown', (e) => {
+      if (!this.nestingPanelOpen) return;
+      const anchor = this.root.querySelector('.toolbar-nesting-anchor');
+      if (anchor instanceof HTMLElement && e.target instanceof Node && !anchor.contains(e.target)) {
+        this.closeNestingPanel();
       }
     });
 
@@ -225,7 +247,13 @@ export class StudioShell {
     this.bindPanelOpeners(this.root);
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this.closePanels();
+      if (e.key === 'Escape') {
+        if (this.nestingPanelOpen) {
+          this.closeNestingPanel();
+          return;
+        }
+        this.closePanels();
+      }
 
       const target = e.target;
       if (
@@ -280,30 +308,57 @@ export class StudioShell {
 
     this.syncMenuUi();
     this.syncPanelsUi();
+    this.syncNestingPanelUi();
+  }
+
+  private toggleNestingPanel(): void {
+    this.nestingPanelOpen = !this.nestingPanelOpen;
+    this.syncNestingPanelUi();
+  }
+
+  private closeNestingPanel(): void {
+    this.nestingPanelOpen = false;
+    this.syncNestingPanelUi();
+  }
+
+  private syncNestingPanelUi(): void {
+    const popup = this.root.querySelector('#nesting-popup');
+    const toggle = this.root.querySelector('#btn-nest-toggle');
+    if (popup instanceof HTMLElement) popup.hidden = !this.nestingPanelOpen;
+    toggle?.classList.toggle('active', this.nestingPanelOpen);
+    if (toggle instanceof HTMLButtonElement) {
+      toggle.setAttribute('aria-expanded', String(this.nestingPanelOpen));
+    }
   }
 
   private bindPanelOpeners(scope: ParentNode): void {
     scope.querySelectorAll('[data-open-panel]').forEach((el) => {
       el.addEventListener('click', () => {
         this.menuOpen = false;
+        this.nestingPanelOpen = false;
         const id = el.getAttribute('data-open-panel') as PanelId;
         if (id) this.openPanel = id;
         this.syncPanelsUi();
         this.syncMenuUi();
+        this.syncNestingPanelUi();
       });
     });
   }
 
   private togglePanel(id: PanelId): void {
+    this.nestingPanelOpen = false;
     this.openPanel = this.openPanel === id ? null : id;
     this.syncPanelsUi();
+    this.syncNestingPanelUi();
   }
 
   private closePanels(): void {
     this.openPanel = null;
     this.menuOpen = false;
+    this.nestingPanelOpen = false;
     this.syncPanelsUi();
     this.syncMenuUi();
+    this.syncNestingPanelUi();
   }
 
   private syncMenuUi(): void {
@@ -398,8 +453,8 @@ export class StudioShell {
       labOptions.isEnabled('CORE-UNDO') &&
       labOptions.isEnabled('F-32') &&
       labOptions.isEnabled('F-31');
-    const nestEnabled =
-      objectCount >= 2 && labOptions.isEnabled('CORE-NEST');
+    const nestFeatureOn = labOptions.isEnabled('CORE-NEST');
+    const nestEnabled = objectCount >= 2 && nestFeatureOn;
 
     const undoBtn = this.root.querySelector('#btn-undo');
     if (undoBtn instanceof HTMLButtonElement) {
@@ -415,20 +470,23 @@ export class StudioShell {
       redoBtn.title = redoEnabled ? history.redoLabel : 'Nothing to redo';
     }
 
-    const nestBtn = this.root.querySelector('#btn-nest');
-    if (nestBtn instanceof HTMLButtonElement) {
-      nestBtn.disabled = !nestEnabled;
-      nestBtn.classList.toggle('is-disabled', !nestEnabled);
-      nestBtn.title = nestEnabled
-        ? `Auto nest ${objectCount} objects`
-        : objectCount < 2
-          ? 'Auto nest (need 2+ objects)'
-          : 'Auto nest disabled in Feature Lab';
+    const nestToggle = this.root.querySelector('#btn-nest-toggle');
+    if (nestToggle instanceof HTMLButtonElement) {
+      nestToggle.disabled = !nestFeatureOn;
+      nestToggle.classList.toggle('is-disabled', !nestFeatureOn);
+      nestToggle.title = nestFeatureOn
+        ? 'Auto nesting settings'
+        : 'Auto nest disabled in Feature Lab';
+    }
+
+    const nestRun = this.root.querySelector('#btn-nest-run');
+    if (nestRun instanceof HTMLButtonElement) {
+      nestRun.disabled = !nestEnabled;
     }
 
     const gapInput = this.root.querySelector('#toolbar-nesting-gap');
     if (gapInput instanceof HTMLInputElement) {
-      gapInput.disabled = !labOptions.isEnabled('CORE-NEST');
+      gapInput.disabled = !nestFeatureOn;
     }
   }
 
