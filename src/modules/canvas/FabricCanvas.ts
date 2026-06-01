@@ -423,6 +423,7 @@ export class FabricCanvas {
     this.canvas.add(this.bedGroup);
     this.canvas.sendObjectToBack(this.bedGroup);
     this.fitBedInView();
+    this.canvas.requestRenderAll();
   }
 
   private onObjectAdded(target?: FabricObject): void {

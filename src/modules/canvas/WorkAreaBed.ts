@@ -21,6 +21,7 @@ function makeLine(
     stroke,
     strokeWidth,
     strokeDashArray: dash,
+    strokeUniform: true,
     selectable: false,
     evented: false,
     objectCaching: false,
@@ -44,9 +45,12 @@ export function buildWorkAreaBed(config: WorkAreaConfigState): Group {
       top: 0,
       width,
       height,
+      originX: 'left',
+      originY: 'top',
       fill: 'rgba(15, 23, 42, 0.35)',
       stroke: '#4f46e5',
       strokeWidth: 3,
+      strokeUniform: true,
       selectable: false,
       evented: false,
       objectCaching: false,
@@ -80,17 +84,21 @@ export function buildWorkAreaBed(config: WorkAreaConfigState): Group {
     parts.push(makeLine(x1, y1, x2, y2, '#ef4444', 2, marginDash));
   });
 
-  const axisPadX = width * 0.05;
-  const axisPadY = height * 0.05;
-  parts.push(makeLine(-axisPadX, oy, width + axisPadX, oy, '#ef4444', 3));
-  parts.push(makeLine(ox, -axisPadY, ox, height + axisPadY, '#22c55e', 3));
+  // Origin axes stay inside bed bounds so Group bbox matches 0…width × 0…height.
+  parts.push(makeLine(0, oy, width, oy, '#ef4444', 3));
+  parts.push(makeLine(ox, 0, ox, height, '#22c55e', 3));
 
   const group = new Group(parts, {
     selectable: false,
     evented: false,
     objectCaching: false,
     subTargetCheck: false,
+    left: 0,
+    top: 0,
+    originX: 'left',
+    originY: 'top',
   });
   group.set('dataRole', BED_ROLE);
+  group.setCoords();
   return group;
 }
