@@ -170,16 +170,39 @@ export class FabricCanvas {
     this.drawBed();
     this.syncDimensions();
     this.resizeObserver = new ResizeObserver(() => {
-      this.syncDimensions();
-      this.fitBedInView();
+      this.handleContainerResize();
     });
     this.resizeObserver.observe(mountEl);
     window.addEventListener('resize', this.onWindowResize);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    window.addEventListener('pageshow', this.onPageShow);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', this.onVisualViewportResize);
+    }
   }
 
   private onWindowResize = (): void => {
-    this.syncDimensions();
-    this.fitBedInView();
+    this.handleContainerResize();
+  };
+
+  private onVisualViewportResize = (): void => {
+    this.handleContainerResize();
+  };
+
+  private onVisibilityChange = (): void => {
+    if (document.hidden) return;
+    this.visibilityRestorePending = true;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        this.handleContainerResize(true);
+        this.visibilityRestorePending = false;
+      });
+    });
+  };
+
+  private onPageShow = (event: PageTransitionEvent): void => {
+    if (!event.persisted) return;
+    this.onVisibilityChange();
   };
 
   private applyPaletteToCanvas(): void {
@@ -789,11 +812,38 @@ export class FabricCanvas {
     await this.loadDummyObjects();
   }
 
-  syncDimensions = (): void => {
-    const width = this.mountEl.clientWidth || 800;
-    const height = Math.max(400, this.mountEl.clientHeight || 480);
+  /**
+   * Resize Fabric canvas to match mount element. Skips bogus 0×0 reads while
+   * a touch tab is backgrounded (prevents bed jumping off-screen on return).
+   */
+  private handleContainerResize(force = false): void {
+    const width = this.mountEl.clientWidth;
+    const height = this.mountEl.clientHeight;
+    if (!force && (document.hidden || width < 2 || height < 2)) return;
+
+    const prevW = this.canvas.getWidth();
+    const prevH = this.canvas.getHeight();
+    if (prevW === width && prevH === height) {
+      this.canvas.requestRenderAll();
+      return;
+    }
+
     this.canvas.setDimensions({ width, height });
+
+    const vpt = this.canvas.viewportTransform;
+    if (vpt && prevW > 0 && prevH > 0) {
+      const scaleX = width / prevW;
+      const scaleY = height / prevH;
+      vpt[4] *= scaleX;
+      vpt[5] *= scaleY;
+      this.canvas.setViewportTransform(vpt);
+    }
+
     this.canvas.requestRenderAll();
+  }
+
+  syncDimensions = (): void => {
+    this.handleContainerResize(true);
   };
 
   fitBedInView(): void {
@@ -907,6 +957,11 @@ export class FabricCanvas {
 
   dispose(): void {
     window.removeEventListener('resize', this.onWindowResize);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    window.removeEventListener('pageshow', this.onPageShow);
+    if (window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', this.onVisualViewportResize);
+    }
     this.resizeObserver?.disconnect();
     this.historyUnsub?.();
     this.paletteUnsub?.();
