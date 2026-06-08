@@ -86,6 +86,9 @@ export class FabricCanvas {
   private historyUnsub: (() => void) | null = null;
   private isDraggingViewport = false;
   private resizeDebounceId: ReturnType<typeof setTimeout> | null = null;
+  private blockMousePanUntil = 0;
+  private onMountPointerDown: ((e: PointerEvent) => void) | null = null;
+  private onMountPointerUp: ((e: PointerEvent) => void) | null = null;
   private readonly onEndViewportPan = (): void => {
     this.endViewportDrag();
     this.ensureBedVisible();
@@ -167,6 +170,7 @@ export class FabricCanvas {
 
     this.bindWheelZoom();
     this.bindDragPan();
+    this.bindTouchSurfaceGuards();
 
     this.historyUnsub = globalHistory.subscribe((state) => {
       this.onHistoryChange?.(state);
@@ -251,11 +255,24 @@ export class FabricCanvas {
    * Click+drag panning on blank canvas space (no modifier keys).
    * Only activates when `opt.target` is empty so object selection/transform stays default.
    */
-  private isTouchPointer(evt: TPointerEvent): boolean {
-    if ('pointerType' in evt && typeof (evt as PointerEvent).pointerType === 'string') {
-      return (evt as PointerEvent).pointerType === 'touch';
+  /** Real mouse only — blocks touch/pen and Windows synthetic mouse-after-touch. */
+  private canStartViewportPan(evt: TPointerEvent): boolean {
+    if (performance.now() < this.blockMousePanUntil) return false;
+
+    if ('pointerType' in evt) {
+      const pt = (evt as PointerEvent).pointerType;
+      if (pt === 'touch' || pt === 'pen') return false;
+      if (pt !== 'mouse') return false;
+    } else if (typeof TouchEvent !== 'undefined' && evt instanceof TouchEvent) {
+      return false;
     }
-    return typeof TouchEvent !== 'undefined' && evt instanceof TouchEvent;
+
+    if ('sourceCapabilities' in evt) {
+      const caps = (evt as UIEvent).sourceCapabilities;
+      if (caps?.firesTouchEvents) return false;
+    }
+
+    return true;
   }
 
   private pointerClientXY(evt: TPointerEvent): { x: number; y: number } | null {
@@ -269,6 +286,67 @@ export class FabricCanvas {
       return { x: evt.changedTouches[0].clientX, y: evt.changedTouches[0].clientY };
     }
     return null;
+  }
+
+  /** Snap home if bed left the screen; otherwise soft-clamp pan offset. */
+  private ensureBedVisible(): void {
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return;
+
+    const zoom = vpt[0];
+    if (!Number.isFinite(zoom) || zoom <= 0) {
+      this.fitBedInView();
+      return;
+    }
+
+    const { width: bedW, height: bedH } = this.workArea.blockSize;
+    const canvasW = this.canvas.getWidth();
+    const canvasH = this.canvas.getHeight();
+    const left = vpt[4];
+    const top = vpt[5];
+    const right = left + bedW * zoom;
+    const bottom = top + bedH * zoom;
+    const visible = right > 0 && left < canvasW && bottom > 0 && top < canvasH;
+
+    if (!visible) {
+      this.fitBedInView();
+      return;
+    }
+
+    this.clampViewportTransform();
+  }
+
+  private refreshCanvasAfterTouch(): void {
+    window.requestAnimationFrame(() => {
+      this.handleContainerResize(true);
+      this.ensureBedVisible();
+      this.canvas.requestRenderAll();
+    });
+  }
+
+  private bindTouchSurfaceGuards(): void {
+    this.onMountPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+        this.blockMousePanUntil = performance.now() + 1200;
+        if (this.isDraggingViewport) {
+          this.isDraggingViewport = false;
+          this.canvas.selection = true;
+          this.canvas.defaultCursor = 'default';
+        }
+      }
+    };
+
+    this.onMountPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+        this.blockMousePanUntil = performance.now() + 500;
+        this.endViewportDrag();
+        this.refreshCanvasAfterTouch();
+      }
+    };
+
+    this.mountEl.addEventListener('pointerdown', this.onMountPointerDown, true);
+    this.mountEl.addEventListener('pointerup', this.onMountPointerUp, true);
+    this.mountEl.addEventListener('pointercancel', this.onMountPointerUp, true);
   }
 
   /** Keep foam bed at least partly on screen after finger-pan or resize drift. */
@@ -319,8 +397,7 @@ export class FabricCanvas {
   private bindDragPan(): void {
     this.canvas.on('mouse:down', (opt) => {
       if (opt.target) return;
-      // Phone/tablet: blank-canvas drag pan loses the bed; object drag still works.
-      if (this.isTouchPointer(opt.e)) return;
+      if (!this.canStartViewportPan(opt.e)) return;
       const pt = this.pointerClientXY(opt.e);
       if (!pt) return;
 
@@ -334,6 +411,10 @@ export class FabricCanvas {
 
     this.canvas.on('mouse:move', (opt) => {
       if (!this.isDraggingViewport) return;
+      if (!this.canStartViewportPan(opt.e)) {
+        this.endViewportDrag();
+        return;
+      }
       const pt = this.pointerClientXY(opt.e);
       const vpt = this.canvas.viewportTransform;
       if (!pt || !vpt) return;
@@ -352,8 +433,6 @@ export class FabricCanvas {
 
     window.addEventListener('pointerup', this.onEndViewportPan);
     window.addEventListener('pointercancel', this.onEndViewportPan);
-    window.addEventListener('touchend', this.onEndViewportPan);
-    window.addEventListener('touchcancel', this.onEndViewportPan);
     window.addEventListener('blur', this.onEndViewportPan);
   }
 
@@ -1037,9 +1116,14 @@ export class FabricCanvas {
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('pointerup', this.onEndViewportPan);
     window.removeEventListener('pointercancel', this.onEndViewportPan);
-    window.removeEventListener('touchend', this.onEndViewportPan);
-    window.removeEventListener('touchcancel', this.onEndViewportPan);
     window.removeEventListener('blur', this.onEndViewportPan);
+    if (this.onMountPointerDown) {
+      this.mountEl.removeEventListener('pointerdown', this.onMountPointerDown, true);
+    }
+    if (this.onMountPointerUp) {
+      this.mountEl.removeEventListener('pointerup', this.onMountPointerUp, true);
+      this.mountEl.removeEventListener('pointercancel', this.onMountPointerUp, true);
+    }
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     window.removeEventListener('pageshow', this.onPageShow);
     if (window.visualViewport) {
