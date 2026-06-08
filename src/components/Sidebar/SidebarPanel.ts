@@ -91,7 +91,7 @@ export function renderSetupPanel(): string {
         <h2 class="section-title">Material Size</h2>
 
         <div class="input-group">
-          <label>Measurement Unit</label>
+          <span class="field-label">Measurement Unit</span>
           <div class="unit-toggle" role="group" aria-label="Measurement unit">
             <button type="button" class="${cfg.unit === 'mm' ? 'active' : ''}" data-setup-unit="mm">Metric (mm)</button>
             <button type="button" class="${cfg.unit === 'inches' ? 'active' : ''}" data-setup-unit="inches">Imperial (in)</button>
@@ -160,7 +160,7 @@ export function renderSetupPanel(): string {
         </div>
 
         <div class="input-group mt-4">
-          <label>Work Area Origin</label>
+          <span class="field-label">Work Area Origin</span>
           <div class="origin-selector-container">
             <div class="origin-grid" role="group" aria-label="Work area origin">
               ${originDots}

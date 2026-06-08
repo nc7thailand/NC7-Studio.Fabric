@@ -91,7 +91,6 @@ export class FabricCanvas {
   private onMountPointerUp: ((e: PointerEvent) => void) | null = null;
   private readonly onEndViewportPan = (): void => {
     this.endViewportDrag();
-    this.ensureBedVisible();
   };
   private lastPanClientX = 0;
   private lastPanClientY = 0;
@@ -316,14 +315,6 @@ export class FabricCanvas {
     this.clampViewportTransform();
   }
 
-  private refreshCanvasAfterTouch(): void {
-    window.requestAnimationFrame(() => {
-      this.handleContainerResize(true);
-      this.ensureBedVisible();
-      this.canvas.requestRenderAll();
-    });
-  }
-
   private bindTouchSurfaceGuards(): void {
     this.onMountPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -340,7 +331,11 @@ export class FabricCanvas {
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
         this.blockMousePanUntil = performance.now() + 500;
         this.endViewportDrag();
-        this.refreshCanvasAfterTouch();
+        if (!this.isBedOnScreen()) {
+          this.fitBedInView();
+        } else {
+          this.canvas.requestRenderAll();
+        }
       }
     };
 

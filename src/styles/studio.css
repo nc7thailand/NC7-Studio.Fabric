@@ -588,7 +588,8 @@ body.dev-route {
   width: 100%;
 }
 
-.input-group label {
+.input-group label,
+.input-group .field-label {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 6px;
