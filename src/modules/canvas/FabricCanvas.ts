@@ -85,8 +85,10 @@ export class FabricCanvas {
   private lastInteractionType: 'move' | 'resize' | 'rotate' = 'move';
   private historyUnsub: (() => void) | null = null;
   private isDraggingViewport = false;
+  private resizeDebounceId: ReturnType<typeof setTimeout> | null = null;
   private readonly onEndViewportPan = (): void => {
     this.endViewportDrag();
+    this.ensureBedVisible();
   };
   private lastPanClientX = 0;
   private lastPanClientY = 0;
@@ -173,7 +175,7 @@ export class FabricCanvas {
     this.drawBed();
     this.syncDimensions();
     this.resizeObserver = new ResizeObserver(() => {
-      this.handleContainerResize();
+      this.scheduleContainerResize();
     });
     this.resizeObserver.observe(mountEl);
     window.addEventListener('resize', this.onWindowResize);
@@ -185,11 +187,11 @@ export class FabricCanvas {
   }
 
   private onWindowResize = (): void => {
-    this.handleContainerResize();
+    this.scheduleContainerResize();
   };
 
   private onVisualViewportResize = (): void => {
-    this.handleContainerResize();
+    this.scheduleContainerResize();
   };
 
   private onVisibilityChange = (): void => {
@@ -197,7 +199,7 @@ export class FabricCanvas {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         this.handleContainerResize(true);
-        this.clampViewportTransform();
+        this.ensureBedVisible();
       });
     });
   };
@@ -249,6 +251,13 @@ export class FabricCanvas {
    * Click+drag panning on blank canvas space (no modifier keys).
    * Only activates when `opt.target` is empty so object selection/transform stays default.
    */
+  private isTouchPointer(evt: TPointerEvent): boolean {
+    if ('pointerType' in evt && typeof (evt as PointerEvent).pointerType === 'string') {
+      return (evt as PointerEvent).pointerType === 'touch';
+    }
+    return typeof TouchEvent !== 'undefined' && evt instanceof TouchEvent;
+  }
+
   private pointerClientXY(evt: TPointerEvent): { x: number; y: number } | null {
     if ('clientX' in evt && typeof evt.clientX === 'number') {
       return { x: evt.clientX, y: evt.clientY };
@@ -303,13 +312,15 @@ export class FabricCanvas {
     this.isDraggingViewport = false;
     this.canvas.selection = true;
     this.canvas.defaultCursor = 'default';
-    this.clampViewportTransform();
+    this.ensureBedVisible();
     this.canvas.requestRenderAll();
   }
 
   private bindDragPan(): void {
     this.canvas.on('mouse:down', (opt) => {
       if (opt.target) return;
+      // Phone/tablet: blank-canvas drag pan loses the bed; object drag still works.
+      if (this.isTouchPointer(opt.e)) return;
       const pt = this.pointerClientXY(opt.e);
       if (!pt) return;
 
@@ -879,10 +890,23 @@ export class FabricCanvas {
    * Resize Fabric canvas to match mount element. Skips bogus 0×0 reads while
    * the page is hidden or container size is invalid (touch tab / app switch).
    */
+  private scheduleContainerResize(force = false): void {
+    if (this.resizeDebounceId != null) {
+      clearTimeout(this.resizeDebounceId);
+    }
+    const delay = force ? 0 : 80;
+    this.resizeDebounceId = setTimeout(() => {
+      this.resizeDebounceId = null;
+      this.handleContainerResize(force);
+    }, delay);
+  }
+
   private handleContainerResize(force = false): void {
     const width = this.mountEl.clientWidth;
     const height = this.mountEl.clientHeight;
-    if (!force && (document.hidden || width < 2 || height < 2)) return;
+    const min = 64;
+    if (!force && (document.hidden || width < min || height < min)) return;
+    if (width < min || height < min) return;
 
     const prevW = this.canvas.getWidth();
     const prevH = this.canvas.getHeight();
@@ -892,17 +916,7 @@ export class FabricCanvas {
     }
 
     this.canvas.setDimensions({ width, height });
-
-    const vpt = this.canvas.viewportTransform;
-    if (vpt && prevW > 0 && prevH > 0) {
-      const scaleX = width / prevW;
-      const scaleY = height / prevH;
-      vpt[4] *= scaleX;
-      vpt[5] *= scaleY;
-      this.canvas.setViewportTransform(vpt);
-    }
-
-    this.clampViewportTransform();
+    this.ensureBedVisible();
     this.canvas.requestRenderAll();
   }
 
@@ -1030,6 +1044,10 @@ export class FabricCanvas {
     window.removeEventListener('pageshow', this.onPageShow);
     if (window.visualViewport) {
       window.visualViewport.removeEventListener('resize', this.onVisualViewportResize);
+    }
+    if (this.resizeDebounceId != null) {
+      clearTimeout(this.resizeDebounceId);
+      this.resizeDebounceId = null;
     }
     this.resizeObserver?.disconnect();
     this.historyUnsub?.();

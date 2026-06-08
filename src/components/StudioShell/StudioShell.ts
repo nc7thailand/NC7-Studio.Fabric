@@ -126,7 +126,7 @@ export class StudioShell {
 
           <div class="canvas-overlay-bottom">
             <div class="nav-hints-badge">
-              <div class="hint-item"><span>Scroll: Zoom · Drag canvas: Pan · 2D bed</span></div>
+              <div class="hint-item"><span>Scroll: Zoom · Drag empty bed: Pan (desktop) · 2D bed</span></div>
               <span class="hint-divider">|</span>
               <div class="hint-item"><span>Cmd+C/V · Cmd+D duplicate · F6 cycle</span></div>
               <span class="hint-divider">|</span>
