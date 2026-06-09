@@ -994,14 +994,27 @@ export class FabricCanvas {
       const oy = m.top + 50;
       const specs: Array<{ name: string; d: string; cncType: 'closed' | 'open'; left: number; top: number }> = [
         {
-          name: 'dummy-letter-a.svg',
-          // Sans-serif A in a 100×100 mm bed-mm box (open paths for foam wire cut).
+          name: 'dummy-letter-b.svg',
+          // Sans-serif B in a 100×100 mm bed-mm box (open paths for foam wire cut).
           d: [
-            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
-            `L ${ox + dummyMm * 0.5} ${oy + dummyMm * 0.05}`,
-            `L ${ox + dummyMm * 0.88} ${oy + dummyMm * 0.95}`,
-            `M ${ox + dummyMm * 0.28} ${oy + dummyMm * 0.6}`,
-            `L ${ox + dummyMm * 0.72} ${oy + dummyMm * 0.6}`,
+            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.05}`,
+            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
+            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.05}`,
+            `L ${ox + dummyMm * 0.45} ${oy + dummyMm * 0.05}`,
+            `L ${ox + dummyMm * 0.75} ${oy + dummyMm * 0.05}`,
+            `L ${ox + dummyMm * 0.82} ${oy + dummyMm * 0.22}`,
+            `L ${ox + dummyMm * 0.82} ${oy + dummyMm * 0.38}`,
+            `L ${ox + dummyMm * 0.72} ${oy + dummyMm * 0.48}`,
+            `L ${ox + dummyMm * 0.45} ${oy + dummyMm * 0.48}`,
+            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.48}`,
+            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.52}`,
+            `L ${ox + dummyMm * 0.48} ${oy + dummyMm * 0.52}`,
+            `L ${ox + dummyMm * 0.78} ${oy + dummyMm * 0.52}`,
+            `L ${ox + dummyMm * 0.86} ${oy + dummyMm * 0.68}`,
+            `L ${ox + dummyMm * 0.86} ${oy + dummyMm * 0.82}`,
+            `L ${ox + dummyMm * 0.75} ${oy + dummyMm * 0.95}`,
+            `L ${ox + dummyMm * 0.48} ${oy + dummyMm * 0.95}`,
+            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
           ].join(' '),
           cncType: 'open',
           left: ox,
