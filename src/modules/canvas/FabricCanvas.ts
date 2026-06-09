@@ -87,8 +87,13 @@ export class FabricCanvas {
   private isDraggingViewport = false;
   private resizeDebounceId: ReturnType<typeof setTimeout> | null = null;
   private blockMousePanUntil = 0;
+  private isPinchZooming = false;
+  private pinchLastDistance = 0;
   private onMountPointerDown: ((e: PointerEvent) => void) | null = null;
   private onMountPointerUp: ((e: PointerEvent) => void) | null = null;
+  private onMountTouchStart: ((e: TouchEvent) => void) | null = null;
+  private onMountTouchMove: ((e: TouchEvent) => void) | null = null;
+  private onMountTouchEnd: ((e: TouchEvent) => void) | null = null;
   private readonly onEndViewportPan = (): void => {
     this.endViewportDrag();
   };
@@ -170,6 +175,7 @@ export class FabricCanvas {
     this.bindWheelZoom();
     this.bindDragPan();
     this.bindTouchSurfaceGuards();
+    this.bindPinchZoom();
 
     this.historyUnsub = globalHistory.subscribe((state) => {
       this.onHistoryChange?.(state);
@@ -288,6 +294,24 @@ export class FabricCanvas {
     return null;
   }
 
+  private isBedOnScreen(): boolean {
+    const vpt = this.canvas.viewportTransform;
+    if (!vpt) return false;
+
+    const zoom = vpt[0];
+    if (!Number.isFinite(zoom) || zoom <= 0) return false;
+
+    const { width: bedW, height: bedH } = this.workArea.blockSize;
+    const canvasW = this.canvas.getWidth();
+    const canvasH = this.canvas.getHeight();
+    const left = vpt[4];
+    const top = vpt[5];
+    const right = left + bedW * zoom;
+    const bottom = top + bedH * zoom;
+
+    return right > 0 && left < canvasW && bottom > 0 && top < canvasH;
+  }
+
   /** Snap home if bed left the screen; otherwise soft-clamp pan offset. */
   private ensureBedVisible(): void {
     const vpt = this.canvas.viewportTransform;
@@ -299,16 +323,7 @@ export class FabricCanvas {
       return;
     }
 
-    const { width: bedW, height: bedH } = this.workArea.blockSize;
-    const canvasW = this.canvas.getWidth();
-    const canvasH = this.canvas.getHeight();
-    const left = vpt[4];
-    const top = vpt[5];
-    const right = left + bedW * zoom;
-    const bottom = top + bedH * zoom;
-    const visible = right > 0 && left < canvasW && bottom > 0 && top < canvasH;
-
-    if (!visible) {
+    if (!this.isBedOnScreen()) {
       this.fitBedInView();
       return;
     }
@@ -343,6 +358,77 @@ export class FabricCanvas {
     this.mountEl.addEventListener('pointerdown', this.onMountPointerDown, true);
     this.mountEl.addEventListener('pointerup', this.onMountPointerUp, true);
     this.mountEl.addEventListener('pointercancel', this.onMountPointerUp, true);
+  }
+
+  private touchSpan(touches: TouchList): number {
+    const a = touches[0];
+    const b = touches[1];
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+
+  private touchCenterClient(touches: TouchList): { x: number; y: number } {
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2,
+      y: (touches[0].clientY + touches[1].clientY) / 2,
+    };
+  }
+
+  private viewportPointFromClient(clientX: number, clientY: number): { x: number; y: number } {
+    const el = this.canvas.upperCanvasEl ?? this.canvasEl;
+    const rect = el.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  /** Two-finger pinch zoom (touch-action:none blocks browser pinch; we handle it). */
+  private bindPinchZoom(): void {
+    this.onMountTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      this.isPinchZooming = true;
+      this.pinchLastDistance = this.touchSpan(e.touches);
+      this.blockMousePanUntil = performance.now() + 2000;
+      if (this.isDraggingViewport) {
+        this.endViewportDrag();
+      }
+      this.canvas.selection = false;
+      e.preventDefault();
+    };
+
+    this.onMountTouchMove = (e: TouchEvent) => {
+      if (!this.isPinchZooming || e.touches.length < 2) return;
+      const dist = this.touchSpan(e.touches);
+      if (this.pinchLastDistance <= 0) {
+        this.pinchLastDistance = dist;
+        return;
+      }
+
+      const ratio = dist / this.pinchLastDistance;
+      if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 0.002) return;
+
+      let zoom = this.canvas.getZoom() * ratio;
+      zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+      const center = this.touchCenterClient(e.touches);
+      this.canvas.zoomToPoint(this.viewportPointFromClient(center.x, center.y), zoom);
+      this.clampViewportTransform();
+      this.pinchLastDistance = dist;
+      this.canvas.requestRenderAll();
+      e.preventDefault();
+    };
+
+    this.onMountTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length >= 2) return;
+      if (!this.isPinchZooming) return;
+      this.isPinchZooming = false;
+      this.pinchLastDistance = 0;
+      this.canvas.selection = true;
+      this.blockMousePanUntil = performance.now() + 500;
+      this.ensureBedVisible();
+      this.canvas.requestRenderAll();
+    };
+
+    this.mountEl.addEventListener('touchstart', this.onMountTouchStart, { passive: false });
+    this.mountEl.addEventListener('touchmove', this.onMountTouchMove, { passive: false });
+    this.mountEl.addEventListener('touchend', this.onMountTouchEnd);
+    this.mountEl.addEventListener('touchcancel', this.onMountTouchEnd);
   }
 
   /** Keep foam bed at least partly on screen after finger-pan or resize drift. */
@@ -1122,6 +1208,16 @@ export class FabricCanvas {
     if (this.onMountPointerUp) {
       this.mountEl.removeEventListener('pointerup', this.onMountPointerUp, true);
       this.mountEl.removeEventListener('pointercancel', this.onMountPointerUp, true);
+    }
+    if (this.onMountTouchStart) {
+      this.mountEl.removeEventListener('touchstart', this.onMountTouchStart);
+    }
+    if (this.onMountTouchMove) {
+      this.mountEl.removeEventListener('touchmove', this.onMountTouchMove);
+    }
+    if (this.onMountTouchEnd) {
+      this.mountEl.removeEventListener('touchend', this.onMountTouchEnd);
+      this.mountEl.removeEventListener('touchcancel', this.onMountTouchEnd);
     }
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     window.removeEventListener('pageshow', this.onPageShow);
