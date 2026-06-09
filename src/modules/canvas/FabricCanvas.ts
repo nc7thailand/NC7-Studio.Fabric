@@ -89,6 +89,8 @@ export class FabricCanvas {
   private blockMousePanUntil = 0;
   private isPinchZooming = false;
   private pinchLastDistance = 0;
+  private touchLastCenterX = 0;
+  private touchLastCenterY = 0;
   private onMountPointerDown: ((e: PointerEvent) => void) | null = null;
   private onMountPointerUp: ((e: PointerEvent) => void) | null = null;
   private onMountTouchStart: ((e: TouchEvent) => void) | null = null;
@@ -100,6 +102,9 @@ export class FabricCanvas {
   private lastPanClientX = 0;
   private lastPanClientY = 0;
   private paletteUnsub: (() => void) | null = null;
+  /** False until fitBedInView runs with a real mount size (touch loads often size-up later). */
+  private hasBootViewportFit = false;
+  private bootViewportTimers: ReturnType<typeof setTimeout>[] = [];
 
   constructor(
     private readonly canvasEl: HTMLCanvasElement,
@@ -192,6 +197,43 @@ export class FabricCanvas {
     window.addEventListener('pageshow', this.onPageShow);
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', this.onVisualViewportResize);
+    }
+    window.addEventListener('orientationchange', this.onOrientationChange);
+    this.scheduleBootViewportFit();
+  }
+
+  private onOrientationChange = (): void => {
+    window.setTimeout(() => {
+      this.handleContainerResize(true);
+      if (!this.isBedOnScreen()) {
+        this.fitBedInView();
+      }
+    }, 120);
+  };
+
+  /**
+   * Touch / mobile: mount size is often 0 or Fabric default on first paint.
+   * drawBed used to fit against that tiny size; ensureBedVisible then skipped refit.
+   */
+  private scheduleBootViewportFit(): void {
+    const attempt = (): void => {
+      const width = this.mountEl.clientWidth;
+      const height = this.mountEl.clientHeight;
+      if (width < 64 || height < 64) return;
+
+      this.handleContainerResize(true);
+      if (!this.hasBootViewportFit) {
+        this.fitBedInView();
+        this.hasBootViewportFit = true;
+      }
+      this.canvas.requestRenderAll();
+    };
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(attempt);
+    });
+    for (const delay of [50, 150, 300, 600, 1200]) {
+      this.bootViewportTimers.push(window.setTimeout(attempt, delay));
     }
   }
 
@@ -379,12 +421,15 @@ export class FabricCanvas {
     return { x: clientX - rect.left, y: clientY - rect.top };
   }
 
-  /** Two-finger pinch zoom (touch-action:none blocks browser pinch; we handle it). */
+  /** Two-finger pan + pinch zoom (touch-action:none — we handle both). */
   private bindPinchZoom(): void {
     this.onMountTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 2) return;
       this.isPinchZooming = true;
       this.pinchLastDistance = this.touchSpan(e.touches);
+      const center = this.touchCenterClient(e.touches);
+      this.touchLastCenterX = center.x;
+      this.touchLastCenterY = center.y;
       this.blockMousePanUntil = performance.now() + 2000;
       if (this.isDraggingViewport) {
         this.endViewportDrag();
@@ -395,20 +440,31 @@ export class FabricCanvas {
 
     this.onMountTouchMove = (e: TouchEvent) => {
       if (!this.isPinchZooming || e.touches.length < 2) return;
+
+      const center = this.touchCenterClient(e.touches);
       const dist = this.touchSpan(e.touches);
-      if (this.pinchLastDistance <= 0) {
-        this.pinchLastDistance = dist;
-        return;
+      const vpt = this.canvas.viewportTransform;
+
+      // Pan view XY — track midpoint of the two fingers.
+      if (vpt) {
+        vpt[4] += center.x - this.touchLastCenterX;
+        vpt[5] += center.y - this.touchLastCenterY;
+        this.canvas.setViewportTransform(vpt);
       }
 
-      const ratio = dist / this.pinchLastDistance;
-      if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 0.002) return;
+      // Pinch zoom when finger span changes.
+      if (this.pinchLastDistance > 0) {
+        const ratio = dist / this.pinchLastDistance;
+        if (Number.isFinite(ratio) && Math.abs(ratio - 1) >= 0.002) {
+          let zoom = this.canvas.getZoom() * ratio;
+          zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+          this.canvas.zoomToPoint(this.viewportPointFromClient(center.x, center.y), zoom);
+        }
+      }
 
-      let zoom = this.canvas.getZoom() * ratio;
-      zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
-      const center = this.touchCenterClient(e.touches);
-      this.canvas.zoomToPoint(this.viewportPointFromClient(center.x, center.y), zoom);
       this.clampViewportTransform();
+      this.touchLastCenterX = center.x;
+      this.touchLastCenterY = center.y;
       this.pinchLastDistance = dist;
       this.canvas.requestRenderAll();
       e.preventDefault();
@@ -419,6 +475,8 @@ export class FabricCanvas {
       if (!this.isPinchZooming) return;
       this.isPinchZooming = false;
       this.pinchLastDistance = 0;
+      this.touchLastCenterX = 0;
+      this.touchLastCenterY = 0;
       this.canvas.selection = true;
       this.blockMousePanUntil = performance.now() + 500;
       this.ensureBedVisible();
@@ -772,7 +830,6 @@ export class FabricCanvas {
     this.bedGroup = buildWorkAreaBed(this.workArea);
     this.canvas.add(this.bedGroup);
     this.canvas.sendObjectToBack(this.bedGroup);
-    this.fitBedInView();
     this.canvas.requestRenderAll();
   }
 
@@ -1057,6 +1114,11 @@ export class FabricCanvas {
 
   async loadStartupDemos(): Promise<void> {
     await this.loadDummyObjects();
+    if (!this.hasBootViewportFit) {
+      this.fitBedInView();
+      this.hasBootViewportFit = true;
+    }
+    this.canvas.requestRenderAll();
   }
 
   /**
@@ -1084,12 +1146,23 @@ export class FabricCanvas {
     const prevW = this.canvas.getWidth();
     const prevH = this.canvas.getHeight();
     if (prevW === width && prevH === height) {
+      if (!this.hasBootViewportFit) {
+        this.fitBedInView();
+        this.hasBootViewportFit = true;
+      } else if (!this.isBedOnScreen()) {
+        this.fitBedInView();
+      }
       this.canvas.requestRenderAll();
       return;
     }
 
     this.canvas.setDimensions({ width, height });
-    this.ensureBedVisible();
+    if (!this.hasBootViewportFit) {
+      this.fitBedInView();
+      this.hasBootViewportFit = true;
+    } else {
+      this.ensureBedVisible();
+    }
     this.canvas.requestRenderAll();
   }
 
@@ -1207,6 +1280,11 @@ export class FabricCanvas {
   }
 
   dispose(): void {
+    for (const id of this.bootViewportTimers) {
+      clearTimeout(id);
+    }
+    this.bootViewportTimers = [];
+    window.removeEventListener('orientationchange', this.onOrientationChange);
     window.removeEventListener('resize', this.onWindowResize);
     window.removeEventListener('pointerup', this.onEndViewportPan);
     window.removeEventListener('pointercancel', this.onEndViewportPan);
