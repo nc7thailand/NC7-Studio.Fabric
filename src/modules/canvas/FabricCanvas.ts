@@ -989,27 +989,23 @@ export class FabricCanvas {
 
     await this.withoutHistoryAsync(async () => {
       const m = this.workArea.margins;
+      const dummyMm = 100;
+      const ox = m.left + 50;
+      const oy = m.top + 50;
       const specs: Array<{ name: string; d: string; cncType: 'closed' | 'open'; left: number; top: number }> = [
         {
-          name: 'dummy-closed-box.svg',
-          d: `M ${m.left + 40} ${m.top + 40} L ${m.left + 240} ${m.top + 40} L ${m.left + 240} ${m.top + 180} L ${m.left + 40} ${m.top + 180} Z`,
-          cncType: 'closed',
-          left: m.left + 40,
-          top: m.top + 40,
-        },
-        {
-          name: 'dummy-open-line.svg',
-          d: `M ${m.left + 280} ${m.top + 60} L ${m.left + 480} ${m.top + 160}`,
+          name: 'dummy-letter-a.svg',
+          // Sans-serif A in a 100×100 mm bed-mm box (open paths for foam wire cut).
+          d: [
+            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
+            `L ${ox + dummyMm * 0.5} ${oy + dummyMm * 0.05}`,
+            `L ${ox + dummyMm * 0.88} ${oy + dummyMm * 0.95}`,
+            `M ${ox + dummyMm * 0.28} ${oy + dummyMm * 0.6}`,
+            `L ${ox + dummyMm * 0.72} ${oy + dummyMm * 0.6}`,
+          ].join(' '),
           cncType: 'open',
-          left: m.left + 280,
-          top: m.top + 60,
-        },
-        {
-          name: 'dummy-closed-tab.svg',
-          d: `M ${m.left + 300} ${m.top + 220} L ${m.left + 520} ${m.top + 220} L ${m.left + 520} ${m.top + 320} L ${m.left + 300} ${m.top + 320} Z`,
-          cncType: 'closed',
-          left: m.left + 300,
-          top: m.top + 220,
+          left: ox,
+          top: oy,
         },
       ];
 
