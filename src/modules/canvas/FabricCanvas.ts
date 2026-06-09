@@ -221,8 +221,9 @@ export class FabricCanvas {
 
     // update existing user objects (bed group is not part of manager.objects)
     for (const scene of this.manager.objects) {
+      const stroke = scene.name.startsWith('dummy-') ? '#FFD700' : palette.objectStroke;
       scene.fabricRef.set({
-        stroke: palette.objectStroke,
+        stroke,
         cornerColor: palette.handleCorner,
         cornerStrokeColor: '#1a1a1a',
         borderColor: '#d1d1d6',
@@ -952,6 +953,7 @@ export class FabricCanvas {
         this.manager.addObject({ id, name: spec.name, fabricRef: path });
       }
 
+      this.canvas.requestRenderAll();
       this.manager.selectObject(null);
       this.canvas.discardActiveObject();
       this.canvas.requestRenderAll();
