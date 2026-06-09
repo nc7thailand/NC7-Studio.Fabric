@@ -926,11 +926,13 @@ export class FabricCanvas {
         },
       ];
 
+      const dummyStroke = '#FFD700';
+
       for (const spec of specs) {
         const palette = canvasPalette.getState();
         const path = new Path(spec.d, {
           fill: 'transparent',
-          stroke: palette.objectStroke,
+          stroke: dummyStroke,
           strokeWidth: 2,
           originX: 'left',
           originY: 'top',
