@@ -103,6 +103,8 @@ export class WorkAreaManager {
       scaleX,
       scaleY,
       angle: state.angle ?? 0,
+      flipX: state.flipX ?? false,
+      flipY: state.flipY ?? false,
     });
     obj.setCoords();
 

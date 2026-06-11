@@ -1,7 +1,7 @@
-import { Canvas, ActiveSelection, Path, Rect, util, type FabricObject, type Group, type TPointerEvent } from 'fabric';
+import { Canvas, ActiveSelection, Group, Path, Rect, util, type FabricObject, type TPointerEvent } from 'fabric';
 import type { LabOptions } from '../devlab/LabOptions';
 import { workAreaConfig, type WorkAreaConfigState } from '../config/WorkAreaConfig';
-import { attachActionControls, iconsReady } from './controls';
+import { stripActionControls } from './controls';
 import { buildWorkAreaBed, isBedObject } from './WorkAreaBed';
 import {
   clampAllFabricObjects,
@@ -29,6 +29,7 @@ import {
   type HistoryAdapter,
   type HistoryState,
 } from '../history/GlobalHistoryStack';
+import { markDocumentChanged } from '../document/unsavedChanges';
 import {
   buildFabricTransformState,
   transformStatesEqual,
@@ -42,6 +43,46 @@ import {
   pasteFromClipboard,
   type ClipboardHost,
 } from './canvasClipboard';
+import { getObjectCncSize, resizeObjectToCncSize } from './objectSizeResize';
+import { drawLinkerStartPoint, hitTestLinkerStartPoint } from './linkerOverlays';
+import { drawLinkerSimCursor } from './linkerSimOverlay';
+import {
+  drawLinkerGraphOverlay,
+  drawLinkerNodeDots,
+  sceneToG90Probe,
+} from './linkerGraphOverlay';
+import { hitTestCutLoop } from './linkerTourOverlay';
+import {
+  DEFAULT_LINKER_START_POINT,
+  linkerStartFromG90,
+  resolveLinkerStartPointCnc,
+  type LinkerStartPointConfig,
+} from '../linker/linkerStartPoint';
+import { fabricBedToCncAbsolute } from '../canvas/cncCoords';
+import { collectCutLoops } from '../linker/linkerPathExtract';
+import { runAutoLink, buildProgramFromGraph } from '../linker/linkerTourBuild';
+import {
+  addLink,
+  buildNodesFromLoops,
+  cloneGraph,
+  hitTestLink,
+  hitTestNode,
+  isFullyLinked,
+  refreshGraphLoops,
+  removeLink,
+  toggleLoopReversed,
+} from '../linker/linkerNodeGraph';
+import { formatLinkerGcode } from '../linker/gcodeExport';
+import { LinkerSimulation, type LinkerSimPosition } from '../linker/linkerSimulation';
+import {
+  createEmptyGraph,
+  flattenLinkerProgram,
+  type G90Point,
+  type LinkerAutoLinkResult,
+  type LinkerG90Program,
+  type LinkerGraphState,
+  type LinkerProgramBuildResult,
+} from '../linker/linkerTypes';
 
 export interface TransformOverlayDetail {
   visible: boolean;
@@ -55,14 +96,26 @@ export interface TransformOverlayDetail {
   posY: number;
 }
 
+export type ContextMenuKind = 'object' | 'canvas';
+
+export interface ObjectContextMenuDetail {
+  clientX: number;
+  clientY: number;
+  kind: ContextMenuKind;
+}
+
 export interface FabricCanvasOptions {
   lab: LabOptions;
   manager: WorkAreaManager;
   backgroundColor?: string;
   workArea?: WorkAreaConfigState;
   onDoubleClickObject?: () => void;
+  onObjectContextMenu?: (detail: ObjectContextMenuDetail) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
+  onLinkerSimStateChange?: (running: boolean) => void;
+  onLinkerStartPointChange?: () => void;
+  onLinkerTourChange?: () => void;
 }
 
 const ZOOM_MIN = 0.05;
@@ -74,8 +127,12 @@ export class FabricCanvas {
   private readonly manager: WorkAreaManager;
   private workArea: WorkAreaConfigState;
   private readonly onDoubleClickObject?: () => void;
+  private readonly onObjectContextMenu?: (detail: ObjectContextMenuDetail) => void;
   private readonly onHistoryChange?: (state: HistoryState) => void;
   private readonly onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
+  private readonly onLinkerSimStateChange?: (running: boolean) => void;
+  private readonly onLinkerStartPointChange?: () => void;
+  private readonly onLinkerTourChange?: () => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
@@ -97,6 +154,7 @@ export class FabricCanvas {
   private onMountTouchMove: ((e: TouchEvent) => void) | null = null;
   private onMountTouchEnd: ((e: TouchEvent) => void) | null = null;
   private readonly onEndViewportPan = (): void => {
+    this.endLinkerStartDrag();
     this.endViewportDrag();
   };
   private lastPanClientX = 0;
@@ -105,6 +163,90 @@ export class FabricCanvas {
   /** False until fitBedInView runs with a real mount size (touch loads often size-up later). */
   private hasBootViewportFit = false;
   private bootViewportTimers: ReturnType<typeof setTimeout>[] = [];
+  private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private longPressStartX = 0;
+  private longPressStartY = 0;
+  private longPressTarget: FabricObject | undefined;
+  private contextMenuLockTarget: FabricObject | null = null;
+  private contextMenuLockSnapshot: {
+    selectable: boolean;
+    evented: boolean;
+    hasControls: boolean;
+    lockMovementX: boolean;
+    lockMovementY: boolean;
+    lockScalingX: boolean;
+    lockScalingY: boolean;
+    lockRotation: boolean;
+  } | null = null;
+  private contextMenuCanvasSelection = true;
+  private linkerModeActive = false;
+  private linkerCanvasSelection = true;
+  private linkerStartPoint: LinkerStartPointConfig = { ...DEFAULT_LINKER_START_POINT };
+  private linkerProgram: LinkerG90Program | null = null;
+  private linkerGraph: LinkerGraphState | null = null;
+  private linkerSelectedLoopId: string | null = null;
+  private linkerSim: LinkerSimulation | null = null;
+  private linkerSimPosition: LinkerSimPosition | null = null;
+  private linkerStartDragging = false;
+  private linkerLinkFromNodeId: string | null = null;
+  private linkerLinkDraftTo: G90Point | null = null;
+  private linkerHoveredNodeId: string | null = null;
+  private linkerHoveredLinkId: string | null = null;
+  private linkerUndoStack: LinkerGraphState[] = [];
+  private linkerRedoStack: LinkerGraphState[] = [];
+  private linkerLockSnapshots = new Map<
+    FabricObject,
+    {
+      selectable: boolean;
+      evented: boolean;
+      hasControls: boolean;
+      lockMovementX: boolean;
+      lockMovementY: boolean;
+      lockScalingX: boolean;
+      lockScalingY: boolean;
+      lockRotation: boolean;
+    }
+  >();
+  private readonly onClearLongPress = (): void => {
+    this.clearLongPressTimer();
+  };
+
+  private readonly onAfterRenderLinkerOverlay = (opt: { ctx: CanvasRenderingContext2D }) => {
+    if (!this.linkerModeActive) return;
+    // after:render also fires for the upper contextTop layer — draw linker art once on main canvas only.
+    const mainCtx = this.canvas.getContext();
+    if (!mainCtx || opt.ctx !== mainCtx) return;
+
+    const topCtx = this.canvas.contextTop;
+    if (topCtx) this.canvas.clearContext(topCtx);
+
+    drawLinkerNodeDots(opt.ctx, this.canvas, this.linkerGraph, this.linkerHoveredNodeId);
+    drawLinkerGraphOverlay(opt.ctx, this.canvas, this.linkerGraph, this.linkerProgram, {
+      selectedLoopId: this.linkerSelectedLoopId,
+      simRunning: this.isLinkerSimulationRunning(),
+      hoveredLinkId: this.linkerHoveredLinkId,
+      hoveredNodeId: this.linkerHoveredNodeId,
+      linkDraftFromNodeId: this.linkerLinkFromNodeId,
+      linkDraftTo: this.linkerLinkDraftTo,
+    });
+    drawLinkerStartPoint(opt.ctx, this.canvas, this.linkerStartPoint, this.linkerStartDragging);
+    drawLinkerSimCursor(opt.ctx, this.canvas, this.linkerSimPosition);
+  };
+
+  private bindLinkerNodeOverlay(): void {
+    this.canvas.on('after:render', this.onAfterRenderLinkerOverlay);
+  }
+
+  private unbindLinkerNodeOverlay(): void {
+    this.canvas.off('after:render', this.onAfterRenderLinkerOverlay);
+  }
+
+  private repaintCanvasNow(): void {
+    this.canvas.cancelRequestedRender();
+    this.canvas.renderAll();
+  }
+
+  private static readonly LONG_PRESS_MS = 450;
 
   constructor(
     private readonly canvasEl: HTMLCanvasElement,
@@ -115,12 +257,12 @@ export class FabricCanvas {
     this.manager = options.manager;
     this.workArea = options.workArea ?? workAreaConfig.getState();
     this.onDoubleClickObject = options.onDoubleClickObject;
+    this.onObjectContextMenu = options.onObjectContextMenu;
     this.onHistoryChange = options.onHistoryChange;
     this.onTransformOverlay = options.onTransformOverlay;
-
-    if (!iconsReady()) {
-      console.warn('[FabricCanvas] action icons not preload');
-    }
+    this.onLinkerSimStateChange = options.onLinkerSimStateChange;
+    this.onLinkerStartPointChange = options.onLinkerStartPointChange;
+    this.onLinkerTourChange = options.onLinkerTourChange;
 
     this.canvas = new Canvas(canvasEl, {
       backgroundColor: options.backgroundColor ?? '#0b0f19',
@@ -151,6 +293,7 @@ export class FabricCanvas {
     this.canvas.on('selection:updated', (e) => this.onCanvasSelection(e.selected?.[0]));
     this.canvas.on('selection:cleared', () => this.onCanvasSelection(undefined));
     this.canvas.on('mouse:dblclick', (e) => {
+      if (this.linkerModeActive) return;
       const target = e.target;
       if (target && !isBedObject(target)) {
         this.onDoubleClickObject?.();
@@ -158,16 +301,25 @@ export class FabricCanvas {
     });
     this.canvas.on('mouse:down', (e) => this.onInteractionBegin(e.target));
     this.canvas.on('object:moving', (e) => {
+      if (!this.interactionSnapshot) {
+        this.onInteractionBegin(e.target);
+      }
       this.lastInteractionType = 'move';
       this.onObjectTransformDuring(e.target);
       this.updateTransformHud(e.e, e.target, 'move');
     });
     this.canvas.on('object:scaling', (e) => {
+      if (!this.interactionSnapshot) {
+        this.onInteractionBegin(e.target);
+      }
       this.lastInteractionType = 'resize';
       this.onObjectTransformDuring(e.target);
       this.updateTransformHud(e.e, e.target, 'resize');
     });
     this.canvas.on('object:rotating', (e) => {
+      if (!this.interactionSnapshot) {
+        this.onInteractionBegin(e.target);
+      }
       this.lastInteractionType = 'rotate';
       this.onObjectTransformDuring(e.target);
       this.updateTransformHud(e.e, e.target, 'rotate');
@@ -181,6 +333,7 @@ export class FabricCanvas {
     this.bindDragPan();
     this.bindTouchSurfaceGuards();
     this.bindPinchZoom();
+    this.bindObjectContextMenu();
 
     this.historyUnsub = globalHistory.subscribe((state) => {
       this.onHistoryChange?.(state);
@@ -295,7 +448,11 @@ export class FabricCanvas {
       this.clampViewportTransform();
       e.preventDefault();
       e.stopPropagation();
-      this.canvas.requestRenderAll();
+      if (this.linkerModeActive) {
+        this.repaintCanvasNow();
+      } else {
+        this.canvas.requestRenderAll();
+      }
     });
   };
 
@@ -373,6 +530,123 @@ export class FabricCanvas {
     this.clampViewportTransform();
   }
 
+  private clearLongPressTimer(): void {
+    if (this.longPressTimer != null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+    this.longPressTarget = undefined;
+  }
+
+  private canOpenObjectContextMenu(target?: FabricObject): target is FabricObject {
+    if (!target || isBedObject(target)) return false;
+    if (target.type === 'activeSelection') return false;
+    return Boolean(this.manager.findByFabric(target));
+  }
+
+  private isEmptyCanvasTarget(target?: FabricObject): boolean {
+    if (!target) return true;
+    return isBedObject(target);
+  }
+
+  private openContextMenu(
+    kind: ContextMenuKind,
+    target: FabricObject | undefined,
+    clientX: number,
+    clientY: number
+  ): void {
+    if (kind === 'object') {
+      if (!this.canOpenObjectContextMenu(target)) return;
+      const scene = this.manager.findByFabric(target);
+      if (scene) {
+        this.manager.selectObject(scene.id);
+        this.canvas.setActiveObject(target);
+        this.canvas.requestRenderAll();
+      }
+    } else {
+      if (!this.isEmptyCanvasTarget(target)) return;
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
+      this.canvas.requestRenderAll();
+    }
+
+    this.onObjectContextMenu?.({ clientX, clientY, kind });
+  }
+
+  /** Right-click (desktop) and long-press (touch) on object or empty bed. */
+  private bindObjectContextMenu(): void {
+    this.onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      if (this.linkerModeActive && this.tryDeleteLinkerLinkAtEvent(e)) return;
+      if (this.linkerModeActive) return;
+      const { target } = this.canvas.findTarget(e);
+      if (this.canOpenObjectContextMenu(target)) {
+        this.openContextMenu('object', target, e.clientX, e.clientY);
+      } else if (this.isEmptyCanvasTarget(target)) {
+        this.openContextMenu('canvas', target, e.clientX, e.clientY);
+      }
+    };
+    this.mountEl.addEventListener('contextmenu', this.onContextMenu);
+
+    this.canvas.on('mouse:down', (opt) => {
+      const evt = opt.e;
+      const target = opt.target;
+
+      if ('button' in evt && evt.button === 2) {
+        evt.preventDefault();
+        if (this.linkerModeActive && this.tryDeleteLinkerLinkAtEvent(evt)) return;
+        if (this.linkerModeActive) return;
+        const pt = this.pointerClientXY(evt);
+        if (!pt) return;
+        if (this.canOpenObjectContextMenu(target)) {
+          this.openContextMenu('object', target, pt.x, pt.y);
+        } else if (this.isEmptyCanvasTarget(target)) {
+          this.openContextMenu('canvas', target, pt.x, pt.y);
+        }
+        return;
+      }
+
+      this.clearLongPressTimer();
+
+      const isTouch =
+        ('pointerType' in evt && (evt.pointerType === 'touch' || evt.pointerType === 'pen')) ||
+        (typeof TouchEvent !== 'undefined' && evt instanceof TouchEvent);
+
+      if (!isTouch) return;
+
+      const pt = this.pointerClientXY(evt);
+      if (!pt) return;
+
+      this.longPressStartX = pt.x;
+      this.longPressStartY = pt.y;
+      this.longPressTarget = target;
+      this.longPressTimer = setTimeout(() => {
+        this.longPressTimer = null;
+        const t = this.longPressTarget;
+        this.longPressTarget = undefined;
+        if (this.canOpenObjectContextMenu(t)) {
+          this.openContextMenu('object', t, pt.x, pt.y);
+        } else if (this.isEmptyCanvasTarget(t)) {
+          this.openContextMenu('canvas', t, pt.x, pt.y);
+        }
+        this.blockMousePanUntil = performance.now() + 800;
+      }, FabricCanvas.LONG_PRESS_MS);
+    });
+
+    this.canvas.on('mouse:move', (opt) => {
+      if (!this.longPressTimer) return;
+      const pt = this.pointerClientXY(opt.e);
+      if (!pt) return;
+      if (Math.hypot(pt.x - this.longPressStartX, pt.y - this.longPressStartY) > 12) {
+        this.clearLongPressTimer();
+      }
+    });
+
+    this.canvas.on('mouse:up', this.onClearLongPress);
+    window.addEventListener('pointerup', this.onClearLongPress);
+    window.addEventListener('pointercancel', this.onClearLongPress);
+  }
+
   private bindTouchSurfaceGuards(): void {
     this.onMountPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
@@ -425,6 +699,7 @@ export class FabricCanvas {
   private bindPinchZoom(): void {
     this.onMountTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 2) return;
+      this.clearLongPressTimer();
       this.isPinchZooming = true;
       this.pinchLastDistance = this.touchSpan(e.touches);
       const center = this.touchCenterClient(e.touches);
@@ -466,7 +741,11 @@ export class FabricCanvas {
       this.touchLastCenterX = center.x;
       this.touchLastCenterY = center.y;
       this.pinchLastDistance = dist;
-      this.canvas.requestRenderAll();
+      if (this.linkerModeActive) {
+        this.repaintCanvasNow();
+      } else {
+        this.canvas.requestRenderAll();
+      }
       e.preventDefault();
     };
 
@@ -480,7 +759,11 @@ export class FabricCanvas {
       this.canvas.selection = true;
       this.blockMousePanUntil = performance.now() + 500;
       this.ensureBedVisible();
-      this.canvas.requestRenderAll();
+      if (this.linkerModeActive) {
+        this.repaintCanvasNow();
+      } else {
+        this.canvas.requestRenderAll();
+      }
     };
 
     this.mountEl.addEventListener('touchstart', this.onMountTouchStart, { passive: false });
@@ -536,6 +819,9 @@ export class FabricCanvas {
 
   private bindDragPan(): void {
     this.canvas.on('mouse:down', (opt) => {
+      if (this.tryBeginLinkerStartDrag(opt)) return;
+      if (this.tryLinkerGraphPointerDown(opt)) return;
+
       if (opt.target) return;
       if (!this.canStartViewportPan(opt.e)) return;
       const pt = this.pointerClientXY(opt.e);
@@ -550,6 +836,18 @@ export class FabricCanvas {
     });
 
     this.canvas.on('mouse:move', (opt) => {
+      if (this.linkerStartDragging) {
+        this.updateLinkerStartFromPointer(opt.e);
+        return;
+      }
+
+      if (this.linkerModeActive && !this.isLinkerSimulationRunning()) {
+        this.updateLinkerHoverFromPointer(opt.e);
+        if (this.linkerLinkFromNodeId) {
+          this.updateLinkerLinkDraft(opt.e);
+        }
+      }
+
       if (!this.isDraggingViewport) return;
       if (!this.canStartViewportPan(opt.e)) {
         this.endViewportDrag();
@@ -564,10 +862,21 @@ export class FabricCanvas {
       this.lastPanClientX = pt.x;
       this.lastPanClientY = pt.y;
       this.clampViewportTransform();
-      this.canvas.requestRenderAll();
+      if (this.linkerModeActive) {
+        this.repaintCanvasNow();
+      } else {
+        this.canvas.requestRenderAll();
+      }
     });
 
-    this.canvas.on('mouse:up', () => {
+    this.canvas.on('mouse:up', (opt) => {
+      if (this.linkerStartDragging) {
+        this.endLinkerStartDrag();
+        return;
+      }
+
+      if (this.tryFinishLinkerLink(opt)) return;
+
       this.endViewportDrag();
     });
 
@@ -593,7 +902,7 @@ export class FabricCanvas {
           const obj = objects[0];
           if (!obj) return;
           obj.set({ sceneId: entry.id, sceneName: entry.name });
-          if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+          stripActionControls(obj);
           this.canvas.add(obj);
           this.manager.addObject({ id: entry.id, name: entry.name, fabricRef: obj });
           this.canvas.setActiveObject(obj);
@@ -606,7 +915,7 @@ export class FabricCanvas {
           const obj = objects[0];
           if (!obj) return;
           obj.set({ sceneId: entry.id, sceneName: entry.name });
-          if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+          stripActionControls(obj);
           this.canvas.add(obj);
           this.manager.addObject({ id: entry.id, name: entry.name, fabricRef: obj });
           this.canvas.setActiveObject(obj);
@@ -642,12 +951,18 @@ export class FabricCanvas {
   }
 
   private recordAdd(scene: { id: string; name: string; fabricRef: FabricObject }): void {
-    if (!this.shouldRecordHistory()) return;
+    if (!this.shouldRecordHistory()) {
+      markDocumentChanged();
+      return;
+    }
     globalHistory.recordAdd(scene);
   }
 
   private recordDelete(scene: { id: string; name: string; fabricRef: FabricObject }): void {
-    if (!this.shouldRecordHistory()) return;
+    if (!this.shouldRecordHistory()) {
+      markDocumentChanged();
+      return;
+    }
     globalHistory.recordDelete(scene);
   }
 
@@ -667,7 +982,7 @@ export class FabricCanvas {
 
   private placeClonedObject(obj: FabricObject, id: string, name: string): SceneObject {
     obj.set({ sceneId: id, sceneName: name });
-    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+    stripActionControls(obj);
     if (this.shouldClamp()) {
       this.clampObjectInMargins(obj);
     }
@@ -684,17 +999,107 @@ export class FabricCanvas {
     return copySelectionToClipboard(this.clipboardHost());
   }
 
-  async pasteFromClipboard(): Promise<SceneObject | null> {
-    return pasteFromClipboard(this.clipboardHost());
+  async pasteFromClipboard(at?: { clientX: number; clientY: number }): Promise<SceneObject | null> {
+    let options: { atScene?: { x: number; y: number } } | undefined;
+    if (at) {
+      const pt = this.clientToScenePoint(at.clientX, at.clientY);
+      options = { atScene: { x: pt.x, y: pt.y } };
+    }
+    return pasteFromClipboard(this.clipboardHost(), options);
+  }
+
+  clientToScenePoint(clientX: number, clientY: number): { x: number; y: number } {
+    const pt = this.canvas.getScenePoint({ clientX, clientY } as MouseEvent);
+    return { x: pt.x, y: pt.y };
   }
 
   async duplicateSelected(): Promise<SceneObject | null> {
     return duplicateSelection(this.clipboardHost());
   }
 
+  mirrorSelectedObject(axis: 'horizontal' | 'vertical'): boolean {
+    const scene = this.manager.getSelected();
+    if (!scene) return false;
+
+    const obj = scene.fabricRef;
+    if (isBedObject(obj)) return false;
+
+    const before = buildFabricTransformState(obj);
+    if (axis === 'horizontal') {
+      obj.set('flipX', !obj.flipX);
+    } else {
+      obj.set('flipY', !obj.flipY);
+    }
+    obj.setCoords();
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(obj);
+    }
+
+    const after = buildFabricTransformState(obj);
+    if (transformStatesEqual(before, after)) return false;
+
+    if (this.shouldRecordHistory() && this.lab.isEnabled('F-31')) {
+      globalHistory.recordTransform({
+        type: 'mirror',
+        objectId: scene.id,
+        before,
+        after,
+      });
+    } else {
+      markDocumentChanged();
+    }
+
+    this.canvas.requestRenderAll();
+    return true;
+  }
+
   cycleFocus(): void {
     if (!this.lab.isEnabled('F-12')) return;
     this.manager.cycleFocus();
+  }
+
+  getSelectedObjectSize(): { widthMm: number; heightMm: number } | null {
+    const scene = this.manager.getSelected();
+    if (!scene) return null;
+    const obj = scene.fabricRef;
+    if (isBedObject(obj)) return null;
+    return getObjectCncSize(obj);
+  }
+
+  resizeSelectedObjectSize(
+    widthMm: number,
+    heightMm: number,
+    options: { lockAspect?: boolean; changed?: 'width' | 'height' | 'both' } = {}
+  ): boolean {
+    const scene = this.manager.getSelected();
+    if (!scene) return false;
+
+    const obj = scene.fabricRef;
+    if (isBedObject(obj)) return false;
+
+    const before = buildFabricTransformState(obj);
+    if (!resizeObjectToCncSize(obj, widthMm, heightMm, options)) return false;
+
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(obj);
+    }
+
+    const after = buildFabricTransformState(obj);
+    if (transformStatesEqual(before, after)) return false;
+
+    if (this.shouldRecordHistory() && this.lab.isEnabled('F-31')) {
+      globalHistory.recordTransform({
+        type: 'resize',
+        objectId: scene.id,
+        before,
+        after,
+      });
+    } else {
+      markDocumentChanged();
+    }
+
+    this.canvas.requestRenderAll();
+    return true;
   }
 
   private hideTransformHud(): void {
@@ -732,21 +1137,27 @@ export class FabricCanvas {
     const snapshot = this.interactionSnapshot;
     this.interactionSnapshot = null;
     if (!target || isBedObject(target) || target.type === 'activeSelection') return;
-    if (!this.lab.isEnabled('F-31')) return;
-    if (!snapshot || !this.shouldRecordHistory()) return;
 
     const scene = this.manager.findByFabric(target);
     if (!scene) return;
 
     const after = buildFabricTransformState(target);
+    if (!snapshot) {
+      markDocumentChanged();
+      return;
+    }
     if (transformStatesEqual(snapshot, after)) return;
 
-    globalHistory.recordTransform({
-      type: this.lastInteractionType,
-      objectId: scene.id,
-      before: snapshot,
-      after,
-    });
+    if (this.shouldRecordHistory() && this.lab.isEnabled('F-31')) {
+      globalHistory.recordTransform({
+        type: this.lastInteractionType,
+        objectId: scene.id,
+        before: snapshot,
+        after,
+      });
+    } else {
+      markDocumentChanged();
+    }
   }
 
   async undo(): Promise<boolean> {
@@ -836,8 +1247,47 @@ export class FabricCanvas {
   private onObjectAdded(target?: FabricObject): void {
     if (!target || isBedObject(target)) return;
     if (target.type === 'activeSelection') return;
-    if (!this.lab.isEnabled('F-22')) return;
-    attachActionControls(target);
+    stripActionControls(target);
+    if (this.linkerModeActive) {
+      this.lockObjectForLinker(target);
+    }
+  }
+
+  private objectEditSnapshot(obj: FabricObject) {
+    return {
+      selectable: obj.selectable ?? true,
+      evented: obj.evented ?? true,
+      hasControls: obj.hasControls ?? true,
+      lockMovementX: obj.lockMovementX ?? false,
+      lockMovementY: obj.lockMovementY ?? false,
+      lockScalingX: obj.lockScalingX ?? false,
+      lockScalingY: obj.lockScalingY ?? false,
+      lockRotation: obj.lockRotation ?? false,
+    };
+  }
+
+  private lockObjectForLinker(obj: FabricObject): void {
+    if (isBedObject(obj) || this.linkerLockSnapshots.has(obj)) return;
+    this.linkerLockSnapshots.set(obj, this.objectEditSnapshot(obj));
+    obj.set({
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      lockMovementX: true,
+      lockMovementY: true,
+      lockScalingX: true,
+      lockScalingY: true,
+      lockRotation: true,
+    });
+    obj.setCoords();
+  }
+
+  private unlockAllLinkerObjects(): void {
+    for (const [obj, snapshot] of this.linkerLockSnapshots) {
+      obj.set({ ...snapshot });
+      obj.setCoords();
+    }
+    this.linkerLockSnapshots.clear();
   }
 
   private existingUserObjects(): FabricObject[] {
@@ -914,7 +1364,7 @@ export class FabricCanvas {
       scheduleImportedBoundsRefresh(grouped);
       const id = this.manager.newId();
       newId = id;
-      if (this.lab.isEnabled('F-22')) attachActionControls(grouped);
+      stripActionControls(grouped);
       this.canvas.add(grouped);
       this.manager.addObject({ id, name, fabricRef: grouped });
 
@@ -924,6 +1374,7 @@ export class FabricCanvas {
       }
       scheduleImportedBoundsRefresh(grouped, () => this.canvas.requestRenderAll());
     });
+    markDocumentChanged();
     return newId;
   }
 
@@ -936,7 +1387,7 @@ export class FabricCanvas {
     }
     scheduleImportedBoundsRefresh(obj);
     const id = this.manager.newId();
-    if (this.lab.isEnabled('F-22')) attachActionControls(obj);
+    stripActionControls(obj);
     this.canvas.add(obj);
     const scene = { id, name, fabricRef: obj };
     this.manager.addObject(scene);
@@ -1007,7 +1458,7 @@ export class FabricCanvas {
         const path = paths[i];
         path.set({ [NC7_TRACED_COLLECTION_KEY]: false, selectable: true, evented: true });
         applyVectorizerEngineeringStyle(path);
-        if (this.lab.isEnabled('F-22')) attachActionControls(path);
+        stripActionControls(path);
         this.canvas.add(path);
 
         const id = this.manager.newId();
@@ -1037,73 +1488,159 @@ export class FabricCanvas {
   }
 
   async loadDemoSvg(): Promise<void> {
-    await this.loadDummyObjects();
+    await this.loadDummyAbcSvg();
+  }
+
+  /** Vector Linker ABC Example 1 — Inkscape source (`public/dummy-abc.svg`). */
+  async loadDummyAbcSvg(): Promise<void> {
+    const res = await fetch('/dummy-abc.svg');
+    if (!res.ok) {
+      throw new Error(`dummy-abc.svg not found (HTTP ${res.status})`);
+    }
+    const svgText = await res.text();
+    const fileName = this.uniqueDummyName('dummy-abc.svg');
+
+    const id = await this.openSvgLayout(svgText, fileName);
+    const scene = this.manager.findById(id);
+    if (!scene) {
+      throw new Error('ABC dummy import did not create a scene object');
+    }
+
+    scaleToMaxMm(scene.fabricRef, 500);
+    autoPlaceOnBed(
+      scene.fabricRef,
+      this.existingUserObjects().filter((obj) => obj !== scene.fabricRef),
+      this.placementLimits(),
+      this.workArea.objectGap
+    );
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(scene.fabricRef);
+    }
+    this.applyDummyGoldStroke(scene.fabricRef);
+    scheduleImportedBoundsRefresh(scene.fabricRef, () => {
+      this.applyDummyGoldStroke(scene.fabricRef);
+      this.canvas.requestRenderAll();
+    });
+    this.manager.selectObject(id);
+    this.canvas.setActiveObject(scene.fabricRef);
+    this.canvas.requestRenderAll();
+    console.info('[FabricCanvas] dummy ABC added:', fileName);
+  }
+
+  async loadDummyWeddingSvg(): Promise<void> {
+    const res = await fetch('/dummy-wedding01.svg');
+    if (!res.ok) {
+      console.error('[FabricCanvas] dummy wedding SVG missing:', res.status);
+      return;
+    }
+    const svgText = await res.text();
+    const fileName = this.uniqueDummyName('dummy-wedding01.svg');
+    const id = await this.openSvgLayout(svgText, fileName);
+    const scene = this.manager.findById(id);
+    if (!scene) return;
+
+    autoPlaceOnBed(
+      scene.fabricRef,
+      this.existingUserObjects().filter((obj) => obj !== scene.fabricRef),
+      this.placementLimits(),
+      this.workArea.objectGap
+    );
+    if (this.shouldClamp()) {
+      this.clampObjectInMargins(scene.fabricRef);
+    }
+    this.applyDummyGoldStroke(scene.fabricRef);
+    scheduleImportedBoundsRefresh(scene.fabricRef, () => {
+      this.applyDummyGoldStroke(scene.fabricRef);
+      this.canvas.requestRenderAll();
+    });
+  }
+
+  private uniqueDummyName(base: string): string {
+    const existing = new Set(this.manager.objects.map((o) => o.name));
+    if (!existing.has(base)) return base;
+    const stem = base.replace(/\.svg$/i, '');
+    let n = 2;
+    while (existing.has(`${stem}-${n}.svg`)) n += 1;
+    return `${stem}-${n}.svg`;
+  }
+
+  /** Bed-visible dummy art stroke — Inkscape ABC uses ~0.2 mm hairlines that vanish on canvas. */
+  private applyDummyGoldStroke(obj: FabricObject): void {
+    const style = {
+      stroke: '#FFD700',
+      fill: 'transparent',
+      strokeWidth: 2,
+      strokeUniform: true,
+      strokeLineCap: 'round' as const,
+      strokeLineJoin: 'round' as const,
+      opacity: 1,
+    };
+    if (obj instanceof Path) {
+      obj.set(style);
+      obj.setCoords();
+      return;
+    }
+    if (obj instanceof Group) {
+      for (const child of obj.getObjects()) {
+        this.applyDummyGoldStroke(child);
+      }
+    }
   }
 
   /** Native bed-mm shapes for save/open smoke tests (no SVG import). */
-  async loadDummyObjects(): Promise<void> {
-    if (this.manager.objects.length > 0) return;
-
+  async loadDummyLetterB(): Promise<void> {
     await this.withoutHistoryAsync(async () => {
-      const m = this.workArea.margins;
       const dummyMm = 100;
-      const ox = m.left + 50;
-      const oy = m.top + 50;
-      const specs: Array<{ name: string; d: string; cncType: 'closed' | 'open'; left: number; top: number }> = [
-        {
-          name: 'dummy-letter-b.svg',
-          // Sans-serif B in a 100×100 mm bed-mm box (open paths for foam wire cut).
-          d: [
-            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.05}`,
-            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
-            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.05}`,
-            `L ${ox + dummyMm * 0.45} ${oy + dummyMm * 0.05}`,
-            `L ${ox + dummyMm * 0.75} ${oy + dummyMm * 0.05}`,
-            `L ${ox + dummyMm * 0.82} ${oy + dummyMm * 0.22}`,
-            `L ${ox + dummyMm * 0.82} ${oy + dummyMm * 0.38}`,
-            `L ${ox + dummyMm * 0.72} ${oy + dummyMm * 0.48}`,
-            `L ${ox + dummyMm * 0.45} ${oy + dummyMm * 0.48}`,
-            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.48}`,
-            `M ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.52}`,
-            `L ${ox + dummyMm * 0.48} ${oy + dummyMm * 0.52}`,
-            `L ${ox + dummyMm * 0.78} ${oy + dummyMm * 0.52}`,
-            `L ${ox + dummyMm * 0.86} ${oy + dummyMm * 0.68}`,
-            `L ${ox + dummyMm * 0.86} ${oy + dummyMm * 0.82}`,
-            `L ${ox + dummyMm * 0.75} ${oy + dummyMm * 0.95}`,
-            `L ${ox + dummyMm * 0.48} ${oy + dummyMm * 0.95}`,
-            `L ${ox + dummyMm * 0.12} ${oy + dummyMm * 0.95}`,
-          ].join(' '),
-          cncType: 'open',
-          left: ox,
-          top: oy,
-        },
-      ];
+      const d = [
+        `M ${dummyMm * 0.12} ${dummyMm * 0.05}`,
+        `L ${dummyMm * 0.12} ${dummyMm * 0.95}`,
+        `M ${dummyMm * 0.12} ${dummyMm * 0.05}`,
+        `L ${dummyMm * 0.45} ${dummyMm * 0.05}`,
+        `L ${dummyMm * 0.75} ${dummyMm * 0.05}`,
+        `L ${dummyMm * 0.82} ${dummyMm * 0.22}`,
+        `L ${dummyMm * 0.82} ${dummyMm * 0.38}`,
+        `L ${dummyMm * 0.72} ${dummyMm * 0.48}`,
+        `L ${dummyMm * 0.45} ${dummyMm * 0.48}`,
+        `L ${dummyMm * 0.12} ${dummyMm * 0.48}`,
+        `M ${dummyMm * 0.12} ${dummyMm * 0.52}`,
+        `L ${dummyMm * 0.48} ${dummyMm * 0.52}`,
+        `L ${dummyMm * 0.78} ${dummyMm * 0.52}`,
+        `L ${dummyMm * 0.86} ${dummyMm * 0.68}`,
+        `L ${dummyMm * 0.86} ${dummyMm * 0.82}`,
+        `L ${dummyMm * 0.75} ${dummyMm * 0.95}`,
+        `L ${dummyMm * 0.48} ${dummyMm * 0.95}`,
+        `L ${dummyMm * 0.12} ${dummyMm * 0.95}`,
+      ].join(' ');
 
-      const dummyStroke = '#FFD700';
-
-      for (const spec of specs) {
-        const palette = canvasPalette.getState();
-        const path = new Path(spec.d, {
-          fill: 'transparent',
-          stroke: dummyStroke,
-          strokeWidth: 2,
-          originX: 'left',
-          originY: 'top',
-          cornerColor: palette.handleCorner,
-          cornerStrokeColor: '#1a1a1a',
-          borderColor: '#d1d1d6',
-          transparentCorners: false,
-        });
-        path.set('cncType', spec.cncType);
-        normalizeFabricObjectToCncFrame(path);
-        path.set({ left: spec.left, top: spec.top });
-        path.setCoords();
-
-        const id = this.manager.newId();
-        if (this.lab.isEnabled('F-22')) attachActionControls(path);
-        this.canvas.add(path);
-        this.manager.addObject({ id, name: spec.name, fabricRef: path });
+      const palette = canvasPalette.getState();
+      const path = new Path(d, {
+        fill: 'transparent',
+        stroke: '#FFD700',
+        strokeWidth: 2,
+        originX: 'left',
+        originY: 'top',
+        cornerColor: palette.handleCorner,
+        cornerStrokeColor: '#1a1a1a',
+        borderColor: '#d1d1d6',
+        transparentCorners: false,
+      });
+      path.set('cncType', 'open');
+      normalizeFabricObjectToCncFrame(path);
+      autoPlaceOnBed(
+        path,
+        this.existingUserObjects(),
+        this.placementLimits(),
+        this.workArea.objectGap
+      );
+      if (this.shouldClamp()) {
+        this.clampObjectInMargins(path);
       }
+
+      const id = this.manager.newId();
+      const name = this.uniqueDummyName('dummy-letter-b.svg');
+      stripActionControls(path);
+      this.canvas.add(path);
+      this.manager.addObject({ id, name, fabricRef: path });
 
       this.canvas.requestRenderAll();
       this.manager.selectObject(null);
@@ -1113,7 +1650,6 @@ export class FabricCanvas {
   }
 
   async loadStartupDemos(): Promise<void> {
-    await this.loadDummyObjects();
     if (!this.hasBootViewportFit) {
       this.fitBedInView();
       this.hasBootViewportFit = true;
@@ -1254,6 +1790,488 @@ export class FabricCanvas {
     return this.manager.objects.length;
   }
 
+  /** Freeze active object while object context menu is open. */
+  setContextMenuLock(locked: boolean): void {
+    if (this.linkerModeActive && locked) return;
+    if (!locked) {
+      if (this.contextMenuLockTarget && this.contextMenuLockSnapshot) {
+        this.contextMenuLockTarget.set({ ...this.contextMenuLockSnapshot });
+        this.contextMenuLockTarget.setCoords();
+      }
+      this.contextMenuLockTarget = null;
+      this.contextMenuLockSnapshot = null;
+      this.canvas.selection = this.contextMenuCanvasSelection;
+      this.canvas.skipTargetFind = false;
+      this.canvas.requestRenderAll();
+      return;
+    }
+
+    const active = this.canvas.getActiveObject();
+    if (!active || isBedObject(active) || active.type === 'activeSelection') return;
+
+    this.contextMenuCanvasSelection = this.canvas.selection ?? true;
+    this.contextMenuLockTarget = active;
+    this.contextMenuLockSnapshot = {
+      selectable: active.selectable ?? true,
+      evented: active.evented ?? true,
+      hasControls: active.hasControls ?? true,
+      lockMovementX: active.lockMovementX ?? false,
+      lockMovementY: active.lockMovementY ?? false,
+      lockScalingX: active.lockScalingX ?? false,
+      lockScalingY: active.lockScalingY ?? false,
+      lockRotation: active.lockRotation ?? false,
+    };
+
+    active.set({
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      lockMovementX: true,
+      lockMovementY: true,
+      lockScalingX: true,
+      lockScalingY: true,
+      lockRotation: true,
+    });
+    active.setCoords();
+    this.canvas.selection = false;
+    this.canvas.skipTargetFind = true;
+    this.canvas.requestRenderAll();
+  }
+
+  getLinkerStartPoint(): LinkerStartPointConfig {
+    return { ...this.linkerStartPoint };
+  }
+
+  setLinkerStartPoint(config: LinkerStartPointConfig, options?: { notify?: boolean }): void {
+    this.linkerStartPoint = {
+      anchor: config.anchor,
+      xMm: config.xMm,
+      yMm: config.yMm,
+    };
+    this.stopLinkerSimulation();
+    this.rebuildProgramIfTourReady();
+    if (options?.notify !== false) {
+      this.onLinkerStartPointChange?.();
+    }
+    if (this.linkerModeActive) {
+      this.repaintCanvasNow();
+    }
+  }
+
+  private tryBeginLinkerStartDrag(opt: { e: TPointerEvent; target?: FabricObject }): boolean {
+    if (!this.linkerModeActive || this.isLinkerSimulationRunning()) return false;
+    if (opt.target) return false;
+
+    const evt = opt.e;
+    if ('button' in evt && evt.button !== 0) return false;
+
+    const pt = this.pointerClientXY(evt);
+    if (!pt) return false;
+
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    if (!hitTestLinkerStartPoint(this.linkerStartPoint, scene.x, scene.y)) return false;
+
+    this.linkerStartDragging = true;
+    this.canvas.defaultCursor = 'grabbing';
+    this.canvas.selection = false;
+    this.updateLinkerStartFromPointer(evt);
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  private updateLinkerStartFromPointer(evt: TPointerEvent | Event): void {
+    const pt = this.pointerClientXY(evt);
+    if (!pt) return;
+
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    const cnc = fabricBedToCncAbsolute(scene.x, scene.y);
+    const next = linkerStartFromG90(cnc.x, cnc.y, this.workArea);
+    this.setLinkerStartPoint(next, { notify: true });
+  }
+
+  private endLinkerStartDrag(): void {
+    if (!this.linkerStartDragging) return;
+    this.linkerStartDragging = false;
+    this.canvas.defaultCursor = 'default';
+    this.rebuildProgramIfTourReady();
+    this.onLinkerStartPointChange?.();
+    this.repaintCanvasNow();
+  }
+
+  private refreshLinkerGraph(): void {
+    const loops = collectCutLoops(this.existingUserObjects());
+    if (!this.linkerGraph) {
+      this.linkerGraph = createEmptyGraph(loops);
+      this.linkerGraph.nodes = buildNodesFromLoops(loops);
+      return;
+    }
+    this.linkerGraph = refreshGraphLoops(this.linkerGraph, loops);
+  }
+
+  private pushLinkerUndo(): void {
+    if (!this.linkerGraph) return;
+    this.linkerUndoStack.push(cloneGraph(this.linkerGraph));
+    if (this.linkerUndoStack.length > 40) this.linkerUndoStack.shift();
+    this.linkerRedoStack = [];
+  }
+
+  linkerUndo(): boolean {
+    const prev = this.linkerUndoStack.pop();
+    if (!prev || !this.linkerGraph) return false;
+    this.linkerRedoStack.push(cloneGraph(this.linkerGraph));
+    this.linkerGraph = prev;
+    this.rebuildProgramFromGraph();
+    this.notifyLinkerTourChange();
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  linkerRedo(): boolean {
+    const next = this.linkerRedoStack.pop();
+    if (!next || !this.linkerGraph) return false;
+    this.linkerUndoStack.push(cloneGraph(this.linkerGraph));
+    this.linkerGraph = next;
+    this.rebuildProgramFromGraph();
+    this.notifyLinkerTourChange();
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  canLinkerUndo(): boolean {
+    return this.linkerUndoStack.length > 0;
+  }
+
+  canLinkerRedo(): boolean {
+    return this.linkerRedoStack.length > 0;
+  }
+
+  private rebuildProgramFromGraph(mode: 'linked' | 'unlinked' = 'linked'): void {
+    if (!this.linkerGraph) {
+      this.linkerProgram = null;
+      return;
+    }
+    if (this.linkerGraph.links.length === 0 && mode === 'linked') {
+      this.linkerProgram = null;
+      return;
+    }
+    const built = buildProgramFromGraph(this.linkerGraph, this.linkerStartPoint, mode);
+    this.linkerProgram = built.ok ? (built.program ?? null) : null;
+  }
+
+  private notifyLinkerTourChange(): void {
+    this.onLinkerTourChange?.();
+  }
+
+  private tryDeleteLinkerLinkAtEvent(evt: TPointerEvent | Event): boolean {
+    if (!this.linkerGraph || this.isLinkerSimulationRunning()) return false;
+    this.refreshLinkerGraph();
+    const pt = this.pointerClientXY(evt);
+    if (!pt) return false;
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    const probe = sceneToG90Probe(scene.x, scene.y);
+    const link = hitTestLink(this.linkerGraph, probe);
+    if (!link) return false;
+    this.pushLinkerUndo();
+    removeLink(this.linkerGraph, link.id);
+    this.rebuildProgramFromGraph();
+    this.notifyLinkerTourChange();
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  private updateLinkerHoverFromPointer(evt: TPointerEvent | Event): void {
+    const pt = this.pointerClientXY(evt);
+    if (!pt || !this.linkerGraph) return;
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    const probe = sceneToG90Probe(scene.x, scene.y);
+    const node = hitTestNode(this.linkerGraph, probe);
+    const link = node ? null : hitTestLink(this.linkerGraph, probe);
+    const nodeId = node?.id ?? null;
+    const linkId = link?.id ?? null;
+    if (nodeId !== this.linkerHoveredNodeId || linkId !== this.linkerHoveredLinkId) {
+      this.linkerHoveredNodeId = nodeId;
+      this.linkerHoveredLinkId = linkId;
+      this.repaintCanvasNow();
+    }
+  }
+
+  private updateLinkerLinkDraft(evt: TPointerEvent | Event): void {
+    const pt = this.pointerClientXY(evt);
+    if (!pt) return;
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    this.linkerLinkDraftTo = sceneToG90Probe(scene.x, scene.y);
+    this.repaintCanvasNow();
+  }
+
+  private tryLinkerGraphPointerDown(opt: { e: TPointerEvent; target?: FabricObject }): boolean {
+    if (!this.linkerModeActive || this.isLinkerSimulationRunning() || this.linkerStartDragging) {
+      return false;
+    }
+    if (opt.target) return false;
+
+    const evt = opt.e;
+
+    this.refreshLinkerGraph();
+    if (!this.linkerGraph || this.linkerGraph.loops.length === 0) return false;
+
+    const pt = this.pointerClientXY(evt);
+    if (!pt) return false;
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    const probe = sceneToG90Probe(scene.x, scene.y);
+
+    if ('button' in evt && evt.button === 2) {
+      return this.tryDeleteLinkerLinkAtEvent(evt);
+    }
+
+    if ('button' in evt && evt.button !== 0) return false;
+
+    const node = hitTestNode(this.linkerGraph, probe);
+    if (node) {
+      this.linkerLinkFromNodeId = node.id;
+      this.linkerLinkDraftTo = probe;
+      this.repaintCanvasNow();
+      return true;
+    }
+
+    const hit = hitTestCutLoop(
+      {
+        loops: this.linkerGraph.loops,
+        order: this.linkerGraph.tourLoopIds,
+        reversed: this.linkerGraph.reversed,
+      },
+      scene.x,
+      scene.y
+    );
+    if (!hit) {
+      if (this.linkerSelectedLoopId) {
+        this.linkerSelectedLoopId = null;
+        this.notifyLinkerTourChange();
+        this.repaintCanvasNow();
+      }
+      return false;
+    }
+
+    this.linkerSelectedLoopId = hit.id;
+    this.notifyLinkerTourChange();
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  private tryFinishLinkerLink(opt: { e: TPointerEvent }): boolean {
+    if (!this.linkerLinkFromNodeId || !this.linkerGraph) return false;
+
+    const fromId = this.linkerLinkFromNodeId;
+    this.linkerLinkFromNodeId = null;
+    this.linkerLinkDraftTo = null;
+
+    const pt = this.pointerClientXY(opt.e);
+    if (!pt) {
+      this.repaintCanvasNow();
+      return true;
+    }
+    const scene = this.clientToScenePoint(pt.x, pt.y);
+    const probe = sceneToG90Probe(scene.x, scene.y);
+    const toNode = hitTestNode(this.linkerGraph, probe);
+
+    if (toNode && toNode.id !== fromId) {
+      this.pushLinkerUndo();
+      addLink(this.linkerGraph, fromId, toNode.id);
+      this.linkerGraph.tourLoopIds = [];
+      this.rebuildProgramFromGraph();
+      this.notifyLinkerTourChange();
+    }
+
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  runLinkerAutoLink(): LinkerAutoLinkResult {
+    this.refreshLinkerGraph();
+    this.pushLinkerUndo();
+    const result = runAutoLink(
+      this.existingUserObjects(),
+      this.linkerStartPoint,
+      this.linkerGraph
+    );
+    if (result.ok && result.graph) {
+      this.linkerGraph = result.graph;
+      this.linkerProgram = result.program ?? null;
+      this.linkerSelectedLoopId = null;
+      this.notifyLinkerTourChange();
+      this.repaintCanvasNow();
+    } else {
+      this.linkerUndoStack.pop();
+    }
+    return result;
+  }
+
+  reverseSelectedLoop(): boolean {
+    if (!this.linkerSelectedLoopId || !this.linkerGraph) return false;
+    const linked = this.linkerGraph.links.some((l) => {
+      const from = this.linkerGraph!.nodes.find((n) => n.id === l.fromNodeId);
+      const to = this.linkerGraph!.nodes.find((n) => n.id === l.toNodeId);
+      return from?.loopId === this.linkerSelectedLoopId || to?.loopId === this.linkerSelectedLoopId;
+    });
+    if (!linked) return false;
+    this.pushLinkerUndo();
+    toggleLoopReversed(this.linkerGraph, this.linkerSelectedLoopId);
+    this.rebuildProgramFromGraph();
+    this.notifyLinkerTourChange();
+    this.repaintCanvasNow();
+    return true;
+  }
+
+  isLinkerFullyLinked(): boolean {
+    return this.linkerGraph ? isFullyLinked(this.linkerGraph) : false;
+  }
+
+  getLinkerGraph(): LinkerGraphState | null {
+    return this.linkerGraph ? cloneGraph(this.linkerGraph) : null;
+  }
+
+  /** @deprecated Use getLinkerGraph */
+  getLinkerTour() {
+    if (!this.linkerGraph) return null;
+    return {
+      loops: this.linkerGraph.loops.map((l) => ({ ...l, points: [...l.points], centroid: { ...l.centroid } })),
+      order: [...this.linkerGraph.tourLoopIds],
+      reversed: { ...this.linkerGraph.reversed },
+    };
+  }
+
+  getLinkerSelectedLoopId(): string | null {
+    return this.linkerSelectedLoopId;
+  }
+
+  rebuildLinkerProgram(): LinkerProgramBuildResult {
+    return this.runLinkerAutoLink();
+  }
+
+  getLinkerProgram(): LinkerG90Program | null {
+    return this.linkerProgram ? { ...this.linkerProgram, start: { ...this.linkerProgram.start }, segments: this.linkerProgram.segments.map((s) => ({ ...s, points: [...s.points] })) } : null;
+  }
+
+  exportLinkerGcodeText(options?: { unlinked?: boolean }): string | null {
+    this.refreshLinkerGraph();
+    if (!this.linkerGraph) return null;
+
+    const mode = options?.unlinked ? 'unlinked' : 'linked';
+    if (mode === 'linked' && !this.linkerProgram) {
+      this.rebuildProgramFromGraph('linked');
+    }
+    if (mode === 'unlinked') {
+      this.rebuildProgramFromGraph('unlinked');
+    }
+    if (!this.linkerProgram) return null;
+
+    const { feedRate, unit, dwellTime } = this.workArea;
+    return formatLinkerGcode(this.linkerProgram, { feedRate, unit, dwellSeconds: dwellTime });
+  }
+
+  isLinkerSimulationRunning(): boolean {
+    return this.linkerSim?.running ?? false;
+  }
+
+  toggleLinkerSimulation(speedPercent: number): boolean {
+    if (this.linkerSim?.running) {
+      this.stopLinkerSimulation();
+      return false;
+    }
+
+    if (!this.linkerProgram) {
+      const built = this.rebuildLinkerProgram();
+      if (!built.ok || !built.program) return false;
+    }
+
+    const moves = flattenLinkerProgram(this.linkerProgram!);
+    if (moves.length < 2) return false;
+
+    this.linkerSim = new LinkerSimulation({
+      moves,
+      feedRate: this.workArea.feedRate,
+      speedPercent,
+      onFrame: (pos) => {
+        this.linkerSimPosition = pos;
+        this.repaintCanvasNow();
+      },
+      onComplete: () => {
+        this.linkerSim = null;
+        this.linkerSimPosition = null;
+        this.notifyLinkerSimRunning(false);
+        this.repaintCanvasNow();
+      },
+    });
+    this.linkerSim.start();
+    this.notifyLinkerSimRunning(true);
+    return true;
+  }
+
+  stopLinkerSimulation(): void {
+    const wasRunning = this.linkerSim?.running ?? false;
+    this.linkerSim?.stop();
+    this.linkerSim = null;
+    this.linkerSimPosition = null;
+    if (wasRunning) {
+      this.onLinkerSimStateChange?.(false);
+    }
+    if (this.linkerModeActive) {
+      this.repaintCanvasNow();
+    }
+  }
+
+  private notifyLinkerSimRunning(running: boolean): void {
+    this.onLinkerSimStateChange?.(running);
+  }
+
+  /** Linker workspace: lock all bed objects — no move/scale/rotate/select. */
+  setLinkerMode(active: boolean): void {
+    if (active === this.linkerModeActive) return;
+
+    if (!active) {
+      this.linkerModeActive = false;
+      this.endLinkerStartDrag();
+      this.stopLinkerSimulation();
+      this.linkerProgram = null;
+      this.linkerGraph = null;
+      this.linkerSelectedLoopId = null;
+      this.linkerLinkFromNodeId = null;
+      this.linkerLinkDraftTo = null;
+      this.linkerUndoStack = [];
+      this.linkerRedoStack = [];
+      this.unbindLinkerNodeOverlay();
+      if (this.canvas.contextTop) this.canvas.clearContext(this.canvas.contextTop);
+      this.unlockAllLinkerObjects();
+      this.canvas.selection = this.linkerCanvasSelection;
+      this.canvas.skipTargetFind = false;
+      this.repaintCanvasNow();
+      return;
+    }
+
+    this.setContextMenuLock(false);
+    this.linkerCanvasSelection = this.canvas.selection ?? true;
+    this.canvas.discardActiveObject();
+    this.manager.selectObject(null);
+
+    for (const scene of this.manager.objects) {
+      this.lockObjectForLinker(scene.fabricRef);
+    }
+
+    this.canvas.selection = false;
+    this.canvas.skipTargetFind = true;
+    this.linkerModeActive = true;
+    this.linkerStartPoint = { ...DEFAULT_LINKER_START_POINT };
+    this.linkerProgram = null;
+    const loops = collectCutLoops(this.existingUserObjects());
+    this.linkerGraph = createEmptyGraph(loops);
+    this.linkerGraph.nodes = buildNodesFromLoops(loops);
+    this.linkerSelectedLoopId = null;
+    this.linkerUndoStack = [];
+    this.linkerRedoStack = [];
+    this.stopLinkerSimulation();
+    this.bindLinkerNodeOverlay();
+    this.repaintCanvasNow();
+  }
+
   getActiveObjectName(): string | null {
     const active = this.canvas.getActiveObject();
     if (active && !isBedObject(active)) {
@@ -1280,6 +2298,16 @@ export class FabricCanvas {
   }
 
   dispose(): void {
+    this.unbindLinkerNodeOverlay();
+    this.setLinkerMode(false);
+    this.setContextMenuLock(false);
+    this.clearLongPressTimer();
+    if (this.onContextMenu) {
+      this.mountEl.removeEventListener('contextmenu', this.onContextMenu);
+    }
+    this.canvas.off('mouse:up', this.onClearLongPress);
+    window.removeEventListener('pointerup', this.onClearLongPress);
+    window.removeEventListener('pointercancel', this.onClearLongPress);
     for (const id of this.bootViewportTimers) {
       clearTimeout(id);
     }

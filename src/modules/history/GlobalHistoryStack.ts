@@ -1,15 +1,17 @@
 import type { FabricObject } from 'fabric';
+import { markDocumentChanged } from '../document/unsavedChanges';
 import {
   buildFabricTransformState,
   type FabricTransformState,
 } from './transformSnapshot';
 
-export type HistoryActionType = 'move' | 'resize' | 'rotate' | 'delete' | 'add' | 'nest';
+export type HistoryActionType = 'move' | 'resize' | 'rotate' | 'mirror' | 'delete' | 'add' | 'nest';
 
 export const HISTORY_LABELS: Record<HistoryActionType, string> = {
   move: 'Undo: Move Object',
   resize: 'Undo: Resize Object',
   rotate: 'Undo: Rotate Object',
+  mirror: 'Undo: Mirror Object',
   delete: 'Undo: Restore Deleted Object',
   add: 'Undo: Remove Added Object',
   nest: 'Undo: Auto Nesting',
@@ -19,6 +21,7 @@ export const REDO_LABELS: Record<HistoryActionType, string> = {
   move: 'Redo: Move Object',
   resize: 'Redo: Resize Object',
   rotate: 'Redo: Rotate Object',
+  mirror: 'Redo: Mirror Object',
   delete: 'Redo: Delete Object',
   add: 'Redo: Restore Added Object',
   nest: 'Redo: Auto Nesting',
@@ -115,6 +118,7 @@ class GlobalHistoryStack {
     this.stack = [];
     this.redoStack = [];
     this.notify();
+    markDocumentChanged();
   }
 
   peek(): HistoryEntry | null {
@@ -136,6 +140,7 @@ class GlobalHistoryStack {
     });
     this.clearRedo();
     this.notify();
+    markDocumentChanged();
   }
 
   recordTransform(params: {
@@ -186,6 +191,7 @@ class GlobalHistoryStack {
     this.redoStack.push(entry);
     await this.applyUndo(adapter, entry);
     this.notify();
+    markDocumentChanged();
     return true;
   }
 
@@ -195,6 +201,7 @@ class GlobalHistoryStack {
     this.stack.push(entry);
     await this.applyRedo(adapter, entry);
     this.notify();
+    markDocumentChanged();
     return true;
   }
 

@@ -9,6 +9,8 @@ export interface FabricTransformState {
   angle: number;
   width: number;
   height: number;
+  flipX: boolean;
+  flipY: boolean;
 }
 
 export function buildFabricTransformState(obj: FabricObject): FabricTransformState {
@@ -22,6 +24,8 @@ export function buildFabricTransformState(obj: FabricObject): FabricTransformSta
     angle: obj.angle ?? 0,
     width: bounds.width,
     height: bounds.height,
+    flipX: obj.flipX ?? false,
+    flipY: obj.flipY ?? false,
   };
 }
 
@@ -35,6 +39,8 @@ export function transformStatesEqual(
     Math.abs(a.top - b.top) <= 0.02 &&
     Math.abs(a.width - b.width) <= 0.02 &&
     Math.abs(a.height - b.height) <= 0.02 &&
-    Math.abs(a.angle - b.angle) <= 0.02
+    Math.abs(a.angle - b.angle) <= 0.02 &&
+    a.flipX === b.flipX &&
+    a.flipY === b.flipY
   );
 }

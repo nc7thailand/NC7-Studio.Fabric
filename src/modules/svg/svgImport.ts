@@ -1,4 +1,4 @@
-import { loadSVGFromString, Path, util, type FabricObject, type Group } from 'fabric';
+import { loadSVGFromString, Path, Group, util, type FabricObject } from 'fabric';
 import type { FabricPlacementLimits } from '../canvas/marginUtils';
 import type { WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { canvasPalette } from '../devlab/CanvasPalette';

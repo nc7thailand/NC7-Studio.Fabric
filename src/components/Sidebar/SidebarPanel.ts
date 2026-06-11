@@ -1,15 +1,28 @@
 import { icons } from '../StudioShell/toolbarIcons';
-import { workAreaConfig, STUDIO_ORIGINS, formatOriginLabel } from '../../modules/config/WorkAreaConfig';
+import { workAreaConfig, STUDIO_ORIGINS, formatOriginLabel, type WorkAreaUnit } from '../../modules/config/WorkAreaConfig';
 import { VECTORIZER_PAUSED, VECTORIZER_PAUSED_MESSAGE } from '../../modules/vectorizer/vectorizerPause';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
 export interface ObjectPanelData {
   name: string;
+  width: number;
+  height: number;
+  unit: WorkAreaUnit;
+  aspectLocked: boolean;
   loops: LoopInfo[];
   totalPerimeterMm: number;
   showLoops: boolean;
   showPerimeter: boolean;
+}
+
+function formatObjectDimension(mm: number, unit: WorkAreaUnit): number {
+  if (unit === 'inches') return parseFloat((mm / 25.4).toFixed(3));
+  return parseFloat(mm.toFixed(2));
+}
+
+function objectDimensionStep(unit: WorkAreaUnit): string {
+  return unit === 'inches' ? '0.001' : '0.1';
 }
 
 export function renderFileSidebar(
@@ -52,6 +65,10 @@ export function renderFileSidebar(
         </button>
       </div>
       <div class="sidebar-content">
+        <div class="file-panel-actions">
+          <button type="button" class="tools-action-btn" data-dummy-add-abc>Dummy add ABC</button>
+          <button type="button" class="tools-action-btn" data-dummy-add-wedding>Dummy add Wedding</button>
+        </div>
         ${objectRows}
       </div>
     </aside>
@@ -63,6 +80,8 @@ export function renderToolsPanel(): string {
     <div class="tools-panel">
       <h3 class="tools-panel-title">Tools</h3>
       <div class="tools-panel-actions">
+        <button type="button" class="tools-action-btn" data-dummy-add-abc>Dummy add ABC</button>
+        <button type="button" class="tools-action-btn" data-dummy-add-wedding>Dummy add Wedding</button>
         <button type="button" class="tools-action-btn" data-open-panel="setup">Material Setup</button>
         <button type="button" class="tools-action-btn" disabled>Remote Access (soon)</button>
         <button type="button" class="tools-action-btn" data-open-vectorcore ${VECTORIZER_PAUSED ? 'disabled title="Vectorizer paused"' : ''}>Trace Image (Legacy Vectorizer)</button>
@@ -260,6 +279,45 @@ export function renderObjectPanel(data: ObjectPanelData | null): string {
     <div class="tools-panel">
       <h3 class="tools-panel-title">Object Properties</h3>
       <div class="object-props">
+        <div class="object-props-size-header">
+          <span class="object-props-label">Size</span>
+          <button
+            type="button"
+            id="obj-prop-aspect-lock"
+            class="aspect-lock-btn ${data.aspectLocked ? 'active' : ''}"
+            aria-pressed="${data.aspectLocked}"
+            title="${data.aspectLocked ? 'Aspect ratio locked' : 'Aspect ratio unlocked'}"
+            aria-label="${data.aspectLocked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}"
+          >${data.aspectLocked ? '🔒' : '🔓'}</button>
+        </div>
+        <div class="object-props-dim-grid">
+          <div class="input-group">
+            <label for="obj-prop-width">Width</label>
+            <div class="input-wrapper">
+              <input
+                id="obj-prop-width"
+                type="number"
+                min="0.01"
+                step="${objectDimensionStep(data.unit)}"
+                value="${formatObjectDimension(data.width, data.unit)}"
+              />
+              <span class="unit-label">${data.unit}</span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="obj-prop-height">Height</label>
+            <div class="input-wrapper">
+              <input
+                id="obj-prop-height"
+                type="number"
+                min="0.01"
+                step="${objectDimensionStep(data.unit)}"
+                value="${formatObjectDimension(data.height, data.unit)}"
+              />
+              <span class="unit-label">${data.unit}</span>
+            </div>
+          </div>
+        </div>
         <div class="object-props-row">
           <span class="object-props-label">Name</span>
           <span class="object-props-value">${data.name}</span>

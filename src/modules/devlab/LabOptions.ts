@@ -138,13 +138,6 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
     label: 'Transform & controls',
     features: [
       {
-        id: 'F-22',
-        label: 'BBox action dots',
-        detail: 'Green clone (+10 mm) and red delete custom controls.',
-        status: 'live',
-        defaultEnabled: true,
-      },
-      {
         id: 'F-21',
         label: 'Rotate handle',
         detail: 'Fabric mtr rotate control.',

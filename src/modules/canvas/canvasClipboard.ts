@@ -7,6 +7,7 @@ import {
   pasteName,
   serializeFabricClone,
 } from './fabricObjectClone';
+import { getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
 
 export const DUPLICATE_OFFSET_MM = 10;
 
@@ -49,32 +50,50 @@ export function copySelectionToClipboard(host: ClipboardHost): boolean {
   return true;
 }
 
+export interface PasteOptions {
+  /** Bed-mm point — pasted object is centered here (empty-canvas paste). */
+  atScene?: { x: number; y: number };
+}
+
 /**
- * F-02 / F-06: paste with stepped offset from copy origin.
+ * F-02 / F-06: paste with stepped offset from copy origin, or at scene point.
  */
-export async function pasteFromClipboard(host: ClipboardHost): Promise<SceneObject | null> {
+export async function pasteFromClipboard(
+  host: ClipboardHost,
+  options?: PasteOptions
+): Promise<SceneObject | null> {
   if (!host.lab.isEnabled('F-04') || !host.lab.isEnabled('F-02') || !clipboard) {
     return null;
   }
 
-  pasteGeneration += 1;
-  const step = host.lab.isEnabled('F-06') ? pasteGeneration : 1;
-  const offset = DUPLICATE_OFFSET_MM * step;
-
   const obj = await enlivenFabricClone(clipboard.fabricJson);
   if (!obj) return null;
 
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  pasteGeneration += 1;
   const name = pasteName(clipboard.name, pasteGeneration);
-  obj.set({
-    left: parseFloat((clipboard.originLeft + offset).toFixed(2)),
-    top: parseFloat((clipboard.originTop + offset).toFixed(2)),
-  });
 
-  const scene = host.placeClone(obj, id, name);
-  if (host.lab.isEnabled('CORE-UNDO')) {
-    host.recordAdd(scene);
+  if (options?.atScene) {
+    normalizeFabricObjectToCncFrame(obj);
+    obj.setCoords();
+    const bounds = getCncBoundingRect(obj);
+    obj.set({
+      left: parseFloat((options.atScene.x - bounds.width / 2).toFixed(2)),
+      top: parseFloat((options.atScene.y - bounds.height / 2).toFixed(2)),
+    });
+    normalizeFabricObjectToCncFrame(obj);
+    obj.setCoords();
+  } else {
+    const step = host.lab.isEnabled('F-06') ? pasteGeneration : 1;
+    const offset = DUPLICATE_OFFSET_MM * step;
+    obj.set({
+      left: parseFloat((clipboard.originLeft + offset).toFixed(2)),
+      top: parseFloat((clipboard.originTop + offset).toFixed(2)),
+    });
   }
+
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const scene = host.placeClone(obj, id, name);
+  host.recordAdd(scene);
   return scene;
 }
 
@@ -94,9 +113,7 @@ export async function duplicateSelection(host: ClipboardHost): Promise<SceneObje
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const name = duplicateName(source.name);
   const scene = host.placeClone(clone, id, name);
-  if (host.lab.isEnabled('CORE-UNDO')) {
-    host.recordAdd(scene);
-  }
+  host.recordAdd(scene);
   return scene;
 }
 

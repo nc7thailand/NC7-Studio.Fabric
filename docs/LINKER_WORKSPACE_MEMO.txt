@@ -1,0 +1,437 @@
+NC7 Studio.Fabric — Linker Workspace Memo
+Author: Cursor agent (CRS continuation)
+Date: 2026-06-09
+Audience: BK (NC7 FoamArt)
+Status: Opinion / design review — NOT implementation spec until BK approves
+
+================================================================================
+1. EXECUTIVE SUMMARY
+================================================================================
+
+Linker is the third major stage of the foam-bed workflow, after import/layout and
+before machine export. Its job is not to move art on the bed. Its job is to
+decide how the hot wire travels: where it starts, in what order it visits each
+cut path, which direction each loop runs, and how it returns home.
+
+The current shell already communicates this intent well: entering Link hides
+layout tools, locks objects, shows a dedicated second-row toolbar, and offers a
+<< back escape hatch. The floating Linker panel is correctly disabled for now;
+toolbar-first is the right call while the workflow is still being defined.
+
+My opinion: treat Linker as a mode, not a panel. The canvas is the workspace.
+The toolbar is the instrument panel. A side drawer can come later for lists,
+G-code preview, or link diagnostics — but only after canvas interaction feels
+right.
+
+
+================================================================================
+2. WHERE LINKER SITS IN THE PIPELINE
+================================================================================
+
+Today (working):
+  Trace / Open SVG  →  geometry on foam bed  →  layout edit (move, resize, nest)
+
+Next (Linker):
+  Locked geometry  →  cut tour design  →  simulation  →  G-code export
+
+Reference product:
+  Vector Linker (CNC Tools World, abandonware). BK has VMware Win11, screenshots,
+  and sample G-code. That reference should set the bar for v1 parity, not for
+  forever architecture.
+
+My opinion: do not mix layout edits into Linker. Once Link is active, the bed is
+frozen. If the user needs to nudge a shape, they press <<, edit, then re-enter
+Link. That discipline keeps undo/history clean and prevents accidental drags
+during delicate path-order work.
+
+
+================================================================================
+3. CURRENT UI — WHAT EXISTS AND WHAT IT SIGNALS
+================================================================================
+
+Top row (linker mode):
+  Position 1: << back — exits linker, restores NC7 + Canvas + unlocks objects
+  Position 2: Link — stays visible as context indicator (you are in linker)
+  Hidden: NC7 menu, Canvas subtoolbar
+
+Second row (linker subtoolbar):
+  Start point
+  Reverse
+  Auto
+  Simulation
+  Sim speed (slider 1–100% with live percentage label)
+
+Floating panel:
+  Disabled intentionally. BK wanted to review top-menu behavior first. Good.
+
+Object behavior in linker mode:
+  All user objects locked: no select-for-edit, no move, no scale, no rotate,
+  no double-click properties, no context menu on objects (via skipTargetFind).
+
+My opinion on each UI choice:
+
+  << BACK
+    Essential. Must always win over every other linker state. One tap out.
+    Should also stop simulation if playing.
+
+  LINK STAYING VISIBLE AT SLOT 2
+    Good wayfinding. User always knows which mode they are in. Keep it active
+    styled while linker mode is on. Do not make Link a toggle that hides the bar;
+    that confuses people who think they exited when they did not.
+
+  NO FLOATING PANEL (FOR NOW)
+    Correct. A blank panel adds noise. Toolbar + canvas is enough until we know
+    what belongs in a list view (ordered paths, link breaks, warnings).
+
+  OBJECT LOCK
+    Correct for layout protection. But we will need a SECOND kind of selection
+    soon: path highlight for reverse / manual order. Locking evented=false on
+    everything blocks that. Future fix: objects stay non-transformable but
+    individual paths or loops become pickable in linker-only hit targets.
+
+
+================================================================================
+4. TOOLBAR FEATURES — DETAILED OPINIONS
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1 START POINT
+--------------------------------------------------------------------------------
+
+BK rule from handoff: one START above the sheet. All cutting leaves from START
+and must return to START along the same path (out-and-back).
+
+What Start point should do:
+  - Place a visible marker above the foam bed (not on the cut surface).
+  - Define the first and last point of the machine tour.
+  - Gate Auto and Simulation: neither runs until START is valid.
+
+Placement opinions:
+  - Default: top-center above material, slightly outside the top margin. Matches
+    typical hot-wire habit and reduces cable/gravity weirdness.
+  - Allow drag reposition along a horizontal band above the bed (not freely on
+    the whole screen). Prevents START from drifting into nonsense.
+  - Show coordinates in mm (or current unit) on hover or in a tiny HUD.
+
+Open question for BK:
+  Fixed default only, or user must always click to set? My vote: auto-place a
+  sensible default on first Link entry, then let user move it with Start point
+  tool active.
+
+--------------------------------------------------------------------------------
+4.2 REVERSE (DIRECTION)
+--------------------------------------------------------------------------------
+
+Purpose: flip travel direction along a path segment or closed loop so the wire
+cuts clockwise vs counter-clockwise as needed for kerf, tabs, or machine habit.
+
+Scope opinions (pick one for v1):
+  A) Reverse the one currently highlighted loop/path only  ← my recommendation
+  B) Reverse entire tour order (probably wrong tool for this button)
+  C) Reverse all loops in selected object
+
+UX opinions:
+  - Requires linker-safe selection (highlight, not transform handles).
+  - Button disabled until something is selected.
+  - Brief visual cue: arrow glyphs on path direction, toggled on reverse.
+  - Undo should record reverse as a linker action, separate from layout undo.
+
+Risk: on grouped SVG imports, "one loop" vs "whole object" must be defined in
+code. CNC geometry already knows loops — reverse should work per loop, not per
+Fabric group bbox.
+
+--------------------------------------------------------------------------------
+4.3 AUTO (LINK)
+--------------------------------------------------------------------------------
+
+Purpose: compute an initial single tour connecting all cut paths, starting and
+ending at START, minimizing air moves between loops.
+
+This is the heart of Linker. Manual linking refines what Auto proposes.
+
+Algorithm opinions (pragmatic v1, not academic optimum):
+  1. Collect all cut loops on bed (open + closed paths).
+  2. For each loop, pick an entry point (nearest to previous exit or START).
+  3. Order loops by greedy nearest-neighbor or simple 2-opt polish.
+  4. Insert bridge moves (air travel) as dashed/non-cut segments in preview.
+  5. Mark tour direction per loop consistently (CW preference or SVG winding).
+
+What Auto must NOT do in v1:
+  - Merge loops into one physical path (that is CAM v2).
+  - Change geometry on the bed.
+  - Run without START.
+
+Failure cases to surface clearly:
+  - Zero loops → "Nothing to link."
+  - One loop → valid trivial tour.
+  - Loops unreachable due to bad data → list which object failed.
+
+My opinion: Auto should be one click, optimistic, slightly imperfect. Perfect
+TSP is unnecessary. Foam operators prefer fast draft + manual touch-up.
+
+--------------------------------------------------------------------------------
+4.4 SIMULATION
+--------------------------------------------------------------------------------
+
+Purpose: animate the wire tip along the linked tour so BK can catch wrong order,
+wrong direction, or silly air moves before exporting G-code.
+
+Behavior opinions:
+  - Play / Pause / Stop (v1 can be toggle: Simulation starts, click again stops).
+  - Draw a moving dot or short trail on the cut path.
+  - Cut moves: solid color. Air moves: dashed, muted color.
+  - START: distinct icon (flag, dot, or labeled "START").
+  - On complete: optionally hold at START or loop preview.
+
+Sim speed slider (1–100%):
+  - Already implemented as UI-only. Good.
+  - Maps to playback multiplier, NOT machine feedrate. Keep that distinction
+    loud in docs so nobody thinks 100% = max RPM on the cutter.
+  - Suggested mapping: 50% = comfortable default; 1% = step-through; 100% = fast
+    review, still capped so animation is followable.
+
+Must not block:
+  - Pan/zoom bed during sim (layout lock is on objects, not viewport).
+  - << back cancels sim immediately.
+
+--------------------------------------------------------------------------------
+4.5 SIM SPEED (SLIDER + PERCENTAGE)
+--------------------------------------------------------------------------------
+
+Current UI: range 1–100, shows live "NN%" label. BK approved.
+
+Opinions:
+  - Keep percentage, not mm/min here. Feedrate belongs in Material Setup /
+    G-code export, not preview playback.
+  - Consider keyboard shortcuts later: [ and ] to nudge speed while sim runs.
+  - Persist last sim speed in session localStorage? Nice-to-have, low priority.
+
+
+================================================================================
+5. MISSING FROM TOOLBAR (BUT IN BK'S FULL SPEC)
+================================================================================
+
+These are not on the bar yet but matter for a complete linker:
+
+  MANUAL LINK (click to set order)
+    My strongest opinion: this is not optional for production trust. Auto alone
+    will mis-order complex beds. Manual link can be:
+      - canvas click on loop to append to tour,
+      - drag row in a future ordered list panel,
+      - or shift-click to insert between steps.
+    Toolbar: maybe "Manual" toggle button, or implicit whenever no tool is active
+    after Auto ran. BK should choose.
+
+  OUT-AND-BACK RETURN PATH
+    Not a button — a rule enforced by the tour builder. Return must reuse the
+    same polyline as outbound to START, not a new shortcut air line. Simulation
+    must show this clearly or operators will distrust the export.
+
+  G-CODE EXPORT
+    Belongs in NC7 menu or a post-linker export step, not crammed on linker bar.
+    v1: G1 only, steady feed from Setup feedRate. VectorLinker parity first.
+
+  CLEAR / RESET TOUR
+    Small but important. "Undo Auto" or "Clear links" when experimentation goes
+    wrong. Could live as secondary action under Auto long-press or in a future
+    panel.
+
+
+================================================================================
+6. CANVAS AS WORKSPACE — VISUAL LANGUAGE
+================================================================================
+
+Recommended drawing layers (bottom to top):
+
+  1. Foam bed + margins (existing)
+  2. Cut geometry (existing paths, unchanged)
+  3. Link overlay (tour order numbers at loop entry, direction arrows)
+  4. Air moves (dashed bridges between loops)
+  5. START marker (always on top)
+  6. Simulation cursor
+
+Color opinions:
+  - Use linker accent (gold/yellow) already on Link button and subtoolbar border.
+  - Do not recolor the art itself; overlay only. Preserves WYSIWYG layout trust.
+
+Numbering:
+  - Show 1, 2, 3… at loop start points after Auto or manual order.
+  - Fade numbers when simulation runs so motion is readable.
+
+
+================================================================================
+7. INTERACTION MODEL — SELECTION WITHOUT EDIT
+================================================================================
+
+Problem today: linker mode sets evented=false on all objects. That blocks path
+picking for Reverse and manual order.
+
+Recommended approach:
+  - Layout transform lock stays.
+  - Add linker hit-testing layer OR re-enable evented on paths with a linker
+    pointer handler that ignores move/scale gestures.
+  - Click = select loop for reverse / reorder.
+  - No marquee selection, no handles.
+
+My opinion: implement linker selection as its own small state machine:
+  idle → start-point-placement → tour-built → sim-playing
+Each state enables only the relevant toolbar buttons.
+
+
+================================================================================
+8. STATE MACHINE (PROPOSED)
+================================================================================
+
+States:
+
+  LINKER_IDLE
+    Entered on Link click. Objects locked. START not set or default placed.
+    Enabled: Start point, <<
+
+  START_PLACEMENT
+    User dragging START. Enabled: Start point (active), <<
+
+  TOUR_DRAFT
+    START set, no tour yet. Enabled: Start point, Auto, <<
+
+  TOUR_READY
+    Auto or manual order exists. Enabled: Start, Reverse, Auto (re-run), Sim,
+    Sim speed, <<
+
+  SIM_RUNNING
+    Enabled: Simulation (stop), Sim speed, <<
+
+Transitions:
+  Link → LINKER_IDLE
+  Start confirmed → TOUR_DRAFT
+  Auto success → TOUR_READY
+  Simulation → SIM_RUNNING
+  << → exit linker, clear overlay (keep tour in memory? BK decision)
+
+Memory opinion: when user exits with <<, discard linker tour. Re-entering Link
+starts fresh. Safer than stale tours after layout edits. If layout unchanged,
+could cache — but layout lock means unchanged until << anyway.
+
+
+================================================================================
+9. UNDO / HISTORY
+================================================================================
+
+Layout undo (existing global stack) should not mix with linker undo.
+
+Opinions:
+  - Linker actions (reverse, reorder, auto, start move) → separate linker undo
+    stack OR single "Reset tour" for v1 simplicity.
+  - << exit does not need undo; it abandons linker session.
+  - If user << then Link again, no expectation of restoring previous tour unless
+    BK explicitly wants session persistence.
+
+
+================================================================================
+10. DATA MODEL (CONCEPTUAL)
+================================================================================
+
+Entities:
+
+  StartPoint { x, y } in bed mm coordinates, above top margin
+
+  CutLoopRef { objectId, loopIndex, entryT?, direction }
+
+  TourStep { type: 'cut' | 'air', loopRef?, from, to, pathSample[] }
+
+  LinkedTour { start, steps[], returnPath[] }
+
+Export reads LinkedTour + Material Setup (feed, dwell, margins) → G-code.
+
+My opinion: store tour in memory first; optional JSON sidecar in saved SVG later.
+Do not mutate Fabric path data for linking — overlay + metadata keeps layout
+file clean.
+
+
+================================================================================
+11. PHASING RECOMMENDATION
+================================================================================
+
+Phase 1 — Mode shell (DONE)
+  Top buttons, subtoolbar, object lock, panel off, sim speed slider UI.
+
+Phase 2 — START + overlay
+  Place START, visual marker, state gating.
+
+Phase 3 — Auto-link v1
+  Greedy tour, numbered overlay, air dashed lines.
+
+Phase 4 — Linker selection + Reverse
+  Pick loop, flip direction, update tour.
+
+Phase 5 — Simulation
+  Play tour with speed slider.
+
+Phase 6 — Manual order
+  Click-to-reorder or list panel.
+
+Phase 7 — G-code export
+  G1, steady feed, .tap/.nc, compare to VectorLinker samples.
+
+BK should sign off each phase before next [RUN].
+
+
+================================================================================
+12. RISKS AND MITIGATIONS
+================================================================================
+
+  Risk: Grouped SVG bounds vs true loop geometry
+    Mitigation: use existing CNC loop metrics / pathCncGeometry, not bbox.
+
+  Risk: Rotated/scaled objects change entry points
+    Mitigation: tour stored in world mm space after setCoords.
+
+  Risk: Operators confuse sim speed with cut feedrate
+    Mitigation: label sim "Preview speed"; feedrate only in Setup / export.
+
+  Risk: Auto-link order surprises on dense nests
+    Mitigation: manual reorder + visible numbers before sim.
+
+  Risk: evented=false blocks linker picks
+    Mitigation: linker-specific hit layer (see section 7).
+
+  Risk: scope creep into full CAM
+    Mitigation: v1 = VectorLinker parity only; no tabs, no ramp, no plunge.
+
+
+================================================================================
+13. QUESTIONS FOR BK (DECISION LOG)
+================================================================================
+
+  1. START default auto-place vs force user click?
+  2. Manual link: toolbar toggle vs always-on after Auto?
+  3. Reverse scope: per loop (recommended) or per object?
+  4. Persist tour if user toggles << then Link without layout change?
+  5. Where does G-code export live — NC7 menu, linker bar, or post-sim prompt?
+  6. Should Simulation auto-run after Auto, or always manual?
+  7. VectorLinker screenshots/G-code: when can CRS/CRA see them for parity check?
+
+
+================================================================================
+14. CLOSING OPINION
+================================================================================
+
+Linker should feel like switching from "arranging stencils on the table" to
+"programming the wire dance." The current shell direction is right: dramatic but
+simple mode change (<< / Link / gold toolbar), frozen bed, canvas-first.
+
+The toolbar five controls map cleanly to operator mental steps:
+  where to begin → fix direction → compute order → watch it run → how fast to watch.
+
+What is missing for real work is not more buttons on day one — it is canvas
+feedback (numbers, arrows, START, dashed air moves) and pickable loops for
+Reverse and manual fixes. Auto alone is a demo; Auto + visible order + sim is
+a product.
+
+Do not re-enable the floating panel until we know what list it shows. A tour
+table with drag-reorder might justify it; a empty box never will.
+
+Waiting for BK review. No further implementation without explicit [RUN] or clear
+"go" on a numbered phase above.
+
+— end of memo —

@@ -1,8 +1,15 @@
-import { Group, Line, Rect, type FabricObject } from 'fabric';
+import { Group, Line, Rect, Text, type FabricObject } from 'fabric';
 import type { WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { getFabricMarginSegments, getOriginPoint } from './marginUtils';
 
 const BED_ROLE = 'work-area-bed';
+const MATERIAL_LABEL_FONT_MM = 28;
+const MATERIAL_LABEL_GAP_MM = 12;
+
+export function materialLabelText(config: WorkAreaConfigState): string {
+  const { width, height } = config.blockSize;
+  return `Material: ${width} × ${height} ${config.unit}`;
+}
 
 export function isBedObject(obj: FabricObject | undefined): boolean {
   return obj?.get?.('dataRole') === BED_ROLE || obj?.group?.get?.('dataRole') === BED_ROLE;
@@ -87,6 +94,22 @@ export function buildWorkAreaBed(config: WorkAreaConfigState): Group {
   // Origin axes stay inside bed bounds so Group bbox matches 0…width × 0…height.
   parts.push(makeLine(0, oy, width, oy, '#ef4444', 3));
   parts.push(makeLine(ox, 0, ox, height, '#22c55e', 3));
+
+  parts.push(
+    new Text(materialLabelText(config), {
+      left: width / 2,
+      top: height + MATERIAL_LABEL_GAP_MM,
+      originX: 'center',
+      originY: 'top',
+      fontSize: MATERIAL_LABEL_FONT_MM,
+      fill: '#94a3b8',
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      fontWeight: '500',
+      selectable: false,
+      evented: false,
+      objectCaching: false,
+    })
+  );
 
   const group = new Group(parts, {
     selectable: false,
