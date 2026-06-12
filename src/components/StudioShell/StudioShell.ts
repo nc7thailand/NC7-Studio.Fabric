@@ -121,11 +121,30 @@ export class StudioShell {
                 <div class="floating-menu-anchor">
                   <button type="button" id="btn-nc7-menu" class="floating-menu-btn" title="NC7 menu" aria-label="NC7 menu" aria-haspopup="menu" aria-expanded="false" aria-controls="nc7-menu">NC7</button>
                   <div id="nc7-menu" class="action-menu" role="menu" aria-label="NC7 menu" hidden>
-                    <button type="button" class="action-menu-item" id="btn-nc7-file" data-open-panel="file" role="menuitem">File</button>
-                    <button type="button" class="action-menu-item" id="btn-open-svg-layout" role="menuitem">Open SVG File</button>
+                    <div class="action-menu-submenu" data-menu-submenu>
+                      <button type="button" class="action-menu-item action-menu-item--parent" id="btn-nc7-file" aria-haspopup="menu" aria-expanded="false" role="menuitem">
+                        File
+                        <span class="action-menu-chevron" aria-hidden="true">›</span>
+                      </button>
+                      <div class="action-menu action-menu--flyout" role="menu" aria-label="File" hidden>
+                        <button type="button" class="action-menu-item" id="btn-open-svg-layout" role="menuitem">Open SVG File</button>
+                        <button type="button" class="action-menu-item" id="btn-save-svg" role="menuitem">Save SVG</button>
+                        <div class="action-menu-submenu" data-menu-submenu>
+                          <button type="button" class="action-menu-item action-menu-item--parent action-menu-item--sub" aria-haspopup="menu" aria-expanded="false" role="menuitem">
+                            Load G-code
+                            <span class="action-menu-chevron" aria-hidden="true">›</span>
+                          </button>
+                          <div class="action-menu action-menu--flyout" role="menu" aria-label="Load G-code" hidden>
+                            <button type="button" class="action-menu-item action-menu-item--sub" id="btn-load-gcode-file" role="menuitem">From file…</button>
+                            <button type="button" class="action-menu-item action-menu-item--sub" data-load-gcode-ref="abc-auto" role="menuitem">ABC1 auto (reference)</button>
+                            <button type="button" class="action-menu-item action-menu-item--sub" data-load-gcode-ref="abc-manual" role="menuitem">ABC1 manual (reference)</button>
+                          </div>
+                        </div>
+                        <button type="button" class="action-menu-item" id="btn-export-gcode" role="menuitem" hidden>Export G-code (.tap)</button>
+                        <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="file" role="menuitem">Files on bed…</button>
+                      </div>
+                    </div>
                     <button type="button" class="action-menu-item" id="btn-dummy-abc" data-dummy-add-abc role="menuitem">Add dummy ABC</button>
-                    <button type="button" class="action-menu-item" id="btn-save-svg" role="menuitem">Save SVG</button>
-                    <button type="button" class="action-menu-item" id="btn-export-gcode" role="menuitem" hidden>Export G-code (.tap)</button>
                     <button type="button" class="action-menu-item" disabled role="menuitem">View (soon)</button>
                     <button type="button" class="action-menu-item" data-open-panel="tools" role="menuitem">Tools</button>
                     <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="setup" role="menuitem">Setup</button>
@@ -161,8 +180,8 @@ export class StudioShell {
                   <span class="canvas-subtoolbar-divider" aria-hidden="true"></span>
                   <label class="linker-sim-speed" for="linker-sim-speed">
                     <span class="toolbar-gap-label">Sim speed</span>
-                    <input id="linker-sim-speed" class="linker-sim-speed-slider" type="range" min="1" max="100" step="1" value="50" aria-label="Simulation speed" aria-valuemin="1" aria-valuemax="100" aria-valuenow="50" />
-                    <span id="linker-sim-speed-value" class="linker-sim-speed-value" aria-hidden="true">50%</span>
+                    <input id="linker-sim-speed" class="linker-sim-speed-slider" type="range" min="100" max="1000" step="10" value="100" aria-label="Simulation speed" aria-valuemin="100" aria-valuemax="1000" aria-valuenow="100" />
+                    <span id="linker-sim-speed-value" class="linker-sim-speed-value" aria-hidden="true">100%</span>
                   </label>
                 </div>
                 <p id="linker-status" class="linker-status" hidden>Click node → drag → click node to link · Right-click link to delete · Auto for draft tour</p>
@@ -195,6 +214,7 @@ export class StudioShell {
           </div>
 
           <input type="file" id="svg-layout-open-input" accept=".svg,image/svg+xml" hidden aria-hidden="true" />
+          <input type="file" id="gcode-open-input" accept=".tap,.nc,.gcode,.gco,text/plain" hidden aria-hidden="true" />
 
           <div id="object-context-menu" class="object-context-menu" role="menu" aria-label="Object actions" hidden>
             <button type="button" class="object-context-menu-item" data-ctx-action="size" role="menuitem">Size</button>
@@ -275,6 +295,7 @@ export class StudioShell {
     this.canvas.onSceneChange(() => {
       this.updateSelectionUi();
       this.updateToolbarUi();
+      this.syncLinkerModeUi();
       this.refreshFilePanel();
       this.refreshObjectPanel();
     });
@@ -351,6 +372,34 @@ export class StudioShell {
         }
       })();
     });
+
+    const gcodeInput = this.root.querySelector('#gcode-open-input');
+    this.root.querySelector('#btn-load-gcode-file')?.addEventListener('click', () => {
+      this.closeToolbarMenus();
+      if (gcodeInput instanceof HTMLInputElement) {
+        gcodeInput.value = '';
+        gcodeInput.click();
+      }
+    });
+
+    gcodeInput?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+      void this.loadGcodeFromFile(file);
+    });
+
+    this.root.querySelectorAll('[data-load-gcode-ref]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const ref = el.getAttribute('data-load-gcode-ref');
+        if (!ref) return;
+        this.closeToolbarMenus();
+        void this.loadGcodeReference(ref);
+      });
+    });
+
+    this.bindActionMenuSubmenus();
 
     this.root.querySelector('#btn-save-svg')?.addEventListener('click', () => {
       this.closeToolbarMenus();
@@ -829,8 +878,12 @@ export class StudioShell {
   }
 
   private syncLinkerModeUi(): void {
+    const gcodeSimOnly = !this.linkerMode && (this.canvas?.hasGcodePreviewTour() ?? false);
+    const showLinkerBar = this.linkerMode || gcodeSimOnly;
+
     this.root.querySelector('.canvas-float-controls')?.classList.toggle('linker-mode', this.linkerMode);
     this.root.querySelector('.canvas-top-stack')?.classList.toggle('linker-mode', this.linkerMode);
+    this.root.querySelector('.canvas-top-stack')?.classList.toggle('gcode-sim-only', gcodeSimOnly);
 
     const backBtn = this.root.querySelector('#btn-linker-back');
     if (backBtn instanceof HTMLElement) {
@@ -845,8 +898,19 @@ export class StudioShell {
 
     const linkerSubtoolbar = this.root.querySelector('#linker-subtoolbar');
     if (linkerSubtoolbar instanceof HTMLElement) {
-      linkerSubtoolbar.hidden = !this.linkerMode;
-      linkerSubtoolbar.classList.toggle('is-open', this.linkerMode);
+      linkerSubtoolbar.hidden = !showLinkerBar;
+      linkerSubtoolbar.classList.toggle('is-open', showLinkerBar);
+      linkerSubtoolbar.classList.toggle('gcode-sim-only', gcodeSimOnly);
+    }
+
+    const linkerOnlyHidden = gcodeSimOnly;
+    for (const sel of ['#btn-linker-start', '#btn-linker-reverse', '#btn-linker-auto', '#linker-status']) {
+      const el = this.root.querySelector(sel);
+      if (el instanceof HTMLElement) el.hidden = linkerOnlyHidden;
+    }
+    if (linkerOnlyHidden) {
+      this.linkerStartPanelOpen = false;
+      this.syncLinkerStartPanelUi();
     }
 
     const exportGcodeBtn = this.root.querySelector('#btn-export-gcode');
@@ -861,14 +925,14 @@ export class StudioShell {
   private syncLinkerToolbarState(): void {
     const tour = this.canvas?.getLinkerTour();
     const selected = this.canvas?.getLinkerSelectedLoopId();
-    const hasProgram = (this.canvas?.getLinkerProgram()?.segments.length ?? 0) > 0;
+    const canSim = this.canvas?.canRunBedSimulation() ?? false;
     const loopCount = tour?.loops.length ?? 0;
     const linkCount = this.canvas?.getLinkerGraph()?.links.length ?? 0;
     const fullyLinked = this.canvas?.isLinkerFullyLinked() ?? false;
 
     const reverseBtn = this.root.querySelector('#btn-linker-reverse');
     if (reverseBtn instanceof HTMLButtonElement) {
-      const canReverse = Boolean(selected && hasProgram);
+      const canReverse = Boolean(selected && (this.canvas?.getLinkerProgram()?.segments.length ?? 0) > 0);
       reverseBtn.disabled = !canReverse;
       reverseBtn.title = canReverse
         ? 'Reverse cut direction on selected loop'
@@ -877,7 +941,10 @@ export class StudioShell {
 
     const simBtn = this.root.querySelector('#btn-linker-sim');
     if (simBtn instanceof HTMLButtonElement) {
-      simBtn.disabled = !hasProgram;
+      simBtn.disabled = !canSim;
+      simBtn.title = canSim
+        ? 'Run hot-wire along G-code path'
+        : 'Load or link a cut tour to simulate';
     }
 
     const status = this.root.querySelector('#linker-status');
@@ -896,9 +963,9 @@ export class StudioShell {
     const el = this.root.querySelector('#linker-sim-speed');
     if (el instanceof HTMLInputElement) {
       const n = parseInt(el.value, 10);
-      if (Number.isFinite(n)) return Math.min(100, Math.max(1, n));
+      if (Number.isFinite(n)) return Math.min(1000, Math.max(100, n));
     }
-    return 50;
+    return 100;
   }
 
   private runLinkerAuto(): void {
@@ -1119,6 +1186,14 @@ export class StudioShell {
   private closeToolbarMenus(): void {
     this.nc7MenuOpen = false;
     this.canvasMenuOpen = false;
+    this.root.querySelectorAll('#nc7-menu .action-menu-submenu.is-open').forEach((wrap) => {
+      if (!(wrap instanceof HTMLElement)) return;
+      wrap.classList.remove('is-open');
+      const btn = wrap.querySelector('.action-menu-item--parent');
+      const panel = wrap.querySelector('.action-menu--flyout');
+      if (btn instanceof HTMLElement) btn.setAttribute('aria-expanded', 'false');
+      if (panel instanceof HTMLElement) panel.hidden = true;
+    });
     this.syncToolbarMenusUi();
   }
 
@@ -1174,7 +1249,8 @@ export class StudioShell {
     const fileOpen = this.openPanel === 'file';
     const toolsOpen = this.openPanel === 'tools';
     this.root.querySelector('#btn-file')?.classList.toggle('active', fileOpen);
-    this.root.querySelector('#btn-nc7-file')?.classList.toggle('active', fileOpen);
+    const fileMenuBtn = this.root.querySelector('#btn-nc7-file');
+    fileMenuBtn?.classList.toggle('active', fileOpen);
     this.root.querySelector('#btn-tools')?.classList.toggle('active', toolsOpen);
     this.root.querySelector('#btn-linker')?.classList.toggle('active', this.openPanel === 'linker');
   }
@@ -1197,6 +1273,22 @@ export class StudioShell {
       if (target.closest('[data-dummy-add-wedding]')) {
         e.preventDefault();
         void this.canvas?.loadDummyWeddingSvg();
+        return;
+      }
+      if (target.closest('[data-load-gcode-file]')) {
+        e.preventDefault();
+        const gcodeInput = this.root.querySelector('#gcode-open-input');
+        if (gcodeInput instanceof HTMLInputElement) {
+          gcodeInput.value = '';
+          gcodeInput.click();
+        }
+        return;
+      }
+      const gcodeRefBtn = target.closest('[data-load-gcode-ref]');
+      if (gcodeRefBtn) {
+        e.preventDefault();
+        const ref = gcodeRefBtn.getAttribute('data-load-gcode-ref');
+        if (ref) void this.loadGcodeReference(ref);
         return;
       }
 
@@ -1232,6 +1324,86 @@ export class StudioShell {
         e.preventDefault();
         void this.canvas?.loadDummyWeddingSvg();
       });
+    });
+  }
+
+  private static readonly GCODE_REF_FILES: Record<string, string> = {
+    'abc-auto': '/reference-gcode/ABC1_auto_no_user_edit.tap',
+    'abc-manual': '/reference-gcode/ABC1_manual_edited.tap',
+  };
+
+  private async loadGcodeFromFile(file: File): Promise<void> {
+    if (!this.canvas) return;
+    try {
+      const text = await file.text();
+      await this.canvas.loadGcodeText(text, file.name);
+      this.refreshFilePanel();
+    } catch (err) {
+      console.error('[StudioShell] load G-code failed', err);
+      const detail = err instanceof Error ? err.message : String(err);
+      window.alert(`Could not load G-code: ${detail}`);
+    }
+  }
+
+  private async loadGcodeReference(refId: string): Promise<void> {
+    if (!this.canvas) return;
+    const url = StudioShell.GCODE_REF_FILES[refId];
+    if (!url) return;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const fileName = url.split('/').pop() ?? 'reference.tap';
+      await this.canvas.loadGcodeText(text, fileName);
+      this.refreshFilePanel();
+    } catch (err) {
+      console.error('[StudioShell] load G-code reference failed', err);
+      const detail = err instanceof Error ? err.message : String(err);
+      window.alert(`Could not load reference G-code: ${detail}`);
+    }
+  }
+
+  /** Nested NC7 menu flyouts (File → Load G-code → …). */
+  private bindActionMenuSubmenus(): void {
+    const root = this.root.querySelector('#nc7-menu');
+    if (!(root instanceof HTMLElement) || root.dataset.submenusBound === '1') return;
+    root.dataset.submenusBound = '1';
+
+    const closeFlyouts = (except?: HTMLElement): void => {
+      root.querySelectorAll('.action-menu-submenu').forEach((wrap) => {
+        if (!(wrap instanceof HTMLElement)) return;
+        if (except && (wrap === except || wrap.contains(except))) return;
+        wrap.classList.remove('is-open');
+        const btn = wrap.querySelector('.action-menu-item--parent');
+        const panel = wrap.querySelector('.action-menu--flyout');
+        if (btn instanceof HTMLElement) btn.setAttribute('aria-expanded', 'false');
+        if (panel instanceof HTMLElement) panel.hidden = true;
+      });
+    };
+
+    root.querySelectorAll('[data-menu-submenu]').forEach((wrap) => {
+      if (!(wrap instanceof HTMLElement)) return;
+      const btn = wrap.querySelector('.action-menu-item--parent');
+      const panel = wrap.querySelector('.action-menu--flyout');
+      if (!(btn instanceof HTMLButtonElement) || !(panel instanceof HTMLElement)) return;
+
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = !wrap.classList.contains('is-open');
+        closeFlyouts(open ? wrap : undefined);
+        wrap.classList.toggle('is-open', open);
+        panel.hidden = !open;
+        btn.setAttribute('aria-expanded', String(open));
+      });
+    });
+
+    root.addEventListener('click', (e) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest('[data-menu-submenu] .action-menu-item--parent')) return;
+      if (target.closest('[data-open-panel]')) {
+        this.closeToolbarMenus();
+      }
     });
   }
 

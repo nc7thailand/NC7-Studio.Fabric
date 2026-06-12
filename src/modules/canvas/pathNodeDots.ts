@@ -8,7 +8,13 @@ import {
 } from 'fabric';
 import { isBedObject } from './WorkAreaBed';
 
+export const GCODE_PREVIEW_ROLE = 'gcode-preview';
+
 type PathCommand = (string | number)[];
+
+export function isGcodePreviewObject(obj: FabricObject): boolean {
+  return obj.get?.('dataRole') === GCODE_PREVIEW_ROLE;
+}
 
 const NODE_DOT_RADIUS = 4.5;
 const NODE_DOT_FILL = '#ef4444';
@@ -81,4 +87,15 @@ export function drawPathNodeDots(
   }
 
   ctx.restore();
+}
+
+/** Red dots on every G-code preview vertex (loaded `.tap` tour). */
+export function drawGcodePreviewNodeDots(
+  ctx: CanvasRenderingContext2D,
+  canvas: Canvas,
+  roots: FabricObject[]
+): void {
+  const previews = roots.filter(isGcodePreviewObject);
+  if (previews.length === 0) return;
+  drawPathNodeDots(ctx, canvas, previews);
 }

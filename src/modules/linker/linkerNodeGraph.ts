@@ -10,8 +10,17 @@ import type {
   LinkerNode,
   LinkerProgramBuildResult,
   LinkerSegment,
+  LinkerTourStep,
 } from './linkerTypes';
-import { loopById, loopPoints, makeNodeId, nodeById, parseNodeId } from './linkerTypes';
+import {
+  LINKER_START_LOOP_ID,
+  LINKER_START_NODE_ID,
+  loopById,
+  loopPoints,
+  makeNodeId,
+  nodeById,
+  parseNodeId,
+} from './linkerTypes';
 
 const MOVE_EPS = 0.001;
 const NODE_HIT_MM = 10;
@@ -21,6 +30,23 @@ let linkIdCounter = 0;
 function nextLinkId(): string {
   linkIdCounter += 1;
   return `link-${linkIdCounter}`;
+}
+
+/** Keep START marker in the graph so the first green link can originate there. */
+export function upsertLinkerStartNode(graph: LinkerGraphState, point: G90Point): LinkerNode {
+  const existing = graph.nodes.find((n) => n.id === LINKER_START_NODE_ID);
+  if (existing) {
+    existing.point = { ...point };
+    return existing;
+  }
+  const node: LinkerNode = {
+    id: LINKER_START_NODE_ID,
+    loopId: LINKER_START_LOOP_ID,
+    pointIndex: -1,
+    point: { ...point },
+  };
+  graph.nodes.push(node);
+  return node;
 }
 
 /** Build nodes at every polyline vertex (Vector Linker red dots). */
@@ -45,6 +71,10 @@ export function refreshGraphLoops(
 ): LinkerGraphState {
   const validLoopIds = new Set(loops.map((l) => l.id));
   const nodes = buildNodesFromLoops(loops);
+  const startNode = graph.nodes.find((n) => n.id === LINKER_START_NODE_ID);
+  if (startNode) {
+    nodes.push({ ...startNode, point: { ...startNode.point } });
+  }
   const validNodeIds = new Set(nodes.map((n) => n.id));
   const links = graph.links.filter(
     (l) => validNodeIds.has(l.fromNodeId) && validNodeIds.has(l.toNodeId)
@@ -54,7 +84,17 @@ export function refreshGraphLoops(
     if (graph.reversed[id] != null) reversed[id] = graph.reversed[id];
   }
   const tourLoopIds = graph.tourLoopIds.filter((id) => validLoopIds.has(id));
-  return { loops, nodes, links, reversed, tourLoopIds };
+  const tourSteps = graph.tourSteps?.filter((s) => {
+    if (s.type === 'link') {
+      return validNodeIds.has(s.fromNodeId) && validNodeIds.has(s.toNodeId);
+    }
+    return (
+      validLoopIds.has(s.loopId) &&
+      validNodeIds.has(s.entryNodeId) &&
+      validNodeIds.has(s.exitNodeId)
+    );
+  });
+  return { loops, nodes, links, reversed, tourLoopIds, tourSteps };
 }
 
 export function cloneGraph(graph: LinkerGraphState): LinkerGraphState {
@@ -68,6 +108,7 @@ export function cloneGraph(graph: LinkerGraphState): LinkerGraphState {
     links: graph.links.map((l) => ({ ...l })),
     reversed: { ...graph.reversed },
     tourLoopIds: [...graph.tourLoopIds],
+    tourSteps: graph.tourSteps?.map((s) => ({ ...s })) as LinkerTourStep[] | undefined,
   };
 }
 
@@ -161,6 +202,14 @@ export function sliceLoopTraversal(
   if (loop.cncType === 'closed') {
     let i = entryIndex;
     out.push({ ...loop.points[i] });
+    if (entryIndex === exitIndex) {
+      const startI = i;
+      do {
+        i = (i + step + n) % n;
+        out.push({ ...loop.points[i] });
+      } while (i !== startI);
+      return out;
+    }
     while (i !== exitIndex) {
       i = (i + step + n) % n;
       out.push({ ...loop.points[i] });
@@ -178,6 +227,115 @@ export function sliceLoopTraversal(
     for (let i = start; i >= end; i -= 1) out.push({ ...loop.points[i] });
   }
   return out;
+}
+
+export function pathLengthG90(points: G90Point[]): number {
+  let len = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    len += distG90(points[i - 1], points[i]);
+  }
+  return len;
+}
+
+/** Shortest arc between two nodes on the same loop (closed loops try both directions). */
+export function sliceLoopBetweenNodes(
+  loop: CutLoop,
+  entryNodeId: string,
+  exitNodeId: string
+): { points: G90Point[]; reversed: boolean } | null {
+  const entryParsed = parseNodeId(entryNodeId);
+  const exitParsed = parseNodeId(exitNodeId);
+  if (!entryParsed || !exitParsed || entryParsed.loopId !== loop.id || exitParsed.loopId !== loop.id) {
+    return null;
+  }
+
+  const entryIdx = entryParsed.pointIndex;
+  const exitIdx = exitParsed.pointIndex;
+  const fwd = sliceLoopTraversal(loop, false, entryIdx, exitIdx);
+  const rev = sliceLoopTraversal(loop, true, entryIdx, exitIdx);
+
+  if (entryIdx === exitIdx && loop.cncType === 'closed') {
+    const fwdLen = pathLengthG90(fwd);
+    const revLen = pathLengthG90(rev);
+    return revLen < fwdLen ? { points: rev, reversed: true } : { points: fwd, reversed: false };
+  }
+
+  if (pathLengthG90(rev) < pathLengthG90(fwd)) {
+    return { points: rev, reversed: true };
+  }
+  return { points: fwd, reversed: false };
+}
+
+export function nearestNodeOnLoop(
+  graph: LinkerGraphState,
+  loopId: string,
+  ref: G90Point
+): LinkerNode | null {
+  let best: LinkerNode | null = null;
+  let bestDist = Infinity;
+  for (const node of graph.nodes) {
+    if (node.loopId !== loopId) continue;
+    const d = distG90(node.point, ref);
+    if (d < bestDist) {
+      bestDist = d;
+      best = node;
+    }
+  }
+  return best;
+}
+
+function lastTourStepExitNodeId(steps: LinkerTourStep[]): string | null {
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const step = steps[i];
+    if (step.type === 'cut') return step.exitNodeId;
+    if (step.type === 'link') return step.toNodeId;
+  }
+  return null;
+}
+
+function appendTourStepsToProgram(
+  graph: LinkerGraphState,
+  steps: LinkerTourStep[],
+  segments: LinkerSegment[],
+  linkLegs: G90Point[][],
+  start: G90Point
+): { current: G90Point; tourIndex: number } {
+  let current = { ...start };
+  let tourIndex = 0;
+
+  for (const step of steps) {
+    if (step.type === 'link') {
+      const toNode = nodeById(graph, step.toNodeId);
+      if (!toNode) continue;
+      const leg = linkLeg(current, toNode.point);
+      if (leg.length > 0) {
+        linkLegs.push([current, ...leg]);
+        segments.push({ kind: 'link', points: leg });
+        current = toNode.point;
+      }
+      continue;
+    }
+
+    const loop = loopById(graph, step.loopId);
+    if (!loop) continue;
+    const sliced = sliceLoopBetweenNodes(loop, step.entryNodeId, step.exitNodeId);
+    const cutPts = sliced?.points ?? [];
+    const reversed = step.reversed ?? sliced?.reversed ?? false;
+    graph.reversed[step.loopId] = reversed;
+    if (cutPts.length > 0) {
+      tourIndex += 1;
+      segments.push({
+        kind: 'cut',
+        points: cutPts,
+        loopId: loop.id,
+        tourIndex,
+        sourceId: loop.sourceId,
+      });
+      current = cutPts[cutPts.length - 1];
+    }
+  }
+
+  return { current, tourIndex };
 }
 
 export function loopEntryExitFromLinks(
@@ -211,6 +369,11 @@ export function recomputeTourLoopIds(graph: LinkerGraphState): string[] {
     const valid = graph.tourLoopIds.filter((id) => graph.loops.some((l) => l.id === id));
     if (valid.length > 0) return valid;
   }
+  const partialLoopIds = new Set(
+    (graph.tourSteps ?? [])
+      .filter((s) => s.type === 'cut')
+      .map((s) => s.loopId)
+  );
   const linked = new Set<string>();
   for (const link of graph.links) {
     const from = nodeById(graph, link.fromNodeId);
@@ -219,7 +382,7 @@ export function recomputeTourLoopIds(graph: LinkerGraphState): string[] {
     if (to) linked.add(to.loopId);
   }
   return sortLoopsInnerBeforeOuter(graph.loops)
-    .filter((l) => linked.has(l.id))
+    .filter((l) => linked.has(l.id) && !partialLoopIds.has(l.id))
     .map((l) => l.id);
 }
 
@@ -258,10 +421,9 @@ function pointInPolygon(p: G90Point, poly: G90Point[]): boolean {
   return inside;
 }
 
-/** Inner contours before containing outers (BK inner-before-outer). */
-export function sortLoopsInnerBeforeOuter(loops: CutLoop[]): CutLoop[] {
+/** Nesting depth — higher = more inner (hole inside outer letter). */
+export function loopNestingDepthMap(loops: CutLoop[]): Map<string, number> {
   const closed = loops.filter((l) => l.cncType === 'closed');
-  const open = loops.filter((l) => l.cncType !== 'closed');
   const depth = new Map<string, number>();
 
   for (const loop of closed) {
@@ -274,6 +436,19 @@ export function sortLoopsInnerBeforeOuter(loops: CutLoop[]): CutLoop[] {
     }
     depth.set(loop.id, d);
   }
+
+  for (const loop of loops) {
+    if (!depth.has(loop.id)) depth.set(loop.id, 0);
+  }
+
+  return depth;
+}
+
+/** Inner contours before containing outers (BK inner-before-outer). */
+export function sortLoopsInnerBeforeOuter(loops: CutLoop[]): CutLoop[] {
+  const closed = loops.filter((l) => l.cncType === 'closed');
+  const open = loops.filter((l) => l.cncType !== 'closed');
+  const depth = loopNestingDepthMap(loops);
 
   const sortedClosed = [...closed].sort((a, b) => {
     const da = depth.get(a.id) ?? 0;
@@ -299,7 +474,8 @@ export function buildLinkedProgram(
   }
 
   const tourLoopIds = recomputeTourLoopIds(graph);
-  if (tourLoopIds.length === 0) {
+  const presetSteps = graph.tourSteps ?? [];
+  if (tourLoopIds.length === 0 && presetSteps.length === 0) {
     return { ok: false, reason: 'Could not resolve tour from links.' };
   }
 
@@ -308,18 +484,40 @@ export function buildLinkedProgram(
   let current: G90Point = { ...start };
   let tourIndex = 0;
 
-  const firstLoopId = tourLoopIds[0];
-  const firstEnds = loopEntryExitFromLinks(graph, firstLoopId, start);
-  const firstEntry = firstEnds ? nodeById(graph, firstEnds.entryNodeId) : null;
-  if (!firstEntry) {
-    return { ok: false, reason: 'Invalid tour entry.' };
-  }
+  if (presetSteps.length > 0) {
+    const built = appendTourStepsToProgram(graph, presetSteps, segments, linkLegs, start);
+    current = built.current;
+    tourIndex = built.tourIndex;
 
-  const toFirst = linkLeg(current, firstEntry.point);
-  if (toFirst.length > 0) {
-    linkLegs.push([current, ...toFirst]);
-    segments.push({ kind: 'link', points: toFirst });
-    current = firstEntry.point;
+    const lastNodeId = lastTourStepExitNodeId(presetSteps);
+    if (lastNodeId) {
+      const exitLink = linkFromNode(graph, lastNodeId);
+      if (exitLink) {
+        const nextNode = nodeById(graph, exitLink.toNodeId);
+        if (nextNode) {
+          const leg = linkLeg(current, nextNode.point);
+          if (leg.length > 0) {
+            linkLegs.push([current, ...leg]);
+            segments.push({ kind: 'link', points: leg, linkId: exitLink.id });
+            current = nextNode.point;
+          }
+        }
+      }
+    }
+  } else {
+    const firstLoopId = tourLoopIds[0];
+    const firstEnds = loopEntryExitFromLinks(graph, firstLoopId, start);
+    const firstEntry = firstEnds ? nodeById(graph, firstEnds.entryNodeId) : null;
+    if (!firstEntry) {
+      return { ok: false, reason: 'Invalid tour entry.' };
+    }
+
+    const toFirst = linkLeg(current, firstEntry.point);
+    if (toFirst.length > 0) {
+      linkLegs.push([current, ...toFirst]);
+      segments.push({ kind: 'link', points: toFirst });
+      current = firstEntry.point;
+    }
   }
 
   for (let si = 0; si < tourLoopIds.length; si += 1) {
@@ -461,6 +659,55 @@ function nearestPointIndex(points: G90Point[], target: G90Point): number {
     }
   }
   return best;
+}
+
+/** Entry at nearest vertex to `from`; direction chosen for cut along contour (not SVG default). */
+export function pickLoopEntryExitFromNearest(
+  loop: CutLoop,
+  from: G90Point
+): { entryNodeId: string; exitNodeId: string; reversed: boolean } {
+  const n = loop.points.length;
+  const entryIdx = nearestPointIndex(loop.points, from);
+
+  if (loop.cncType === 'closed' || n <= 1) {
+    return {
+      entryNodeId: makeNodeId(loop.id, entryIdx),
+      exitNodeId: makeNodeId(loop.id, entryIdx),
+      reversed: false,
+    };
+  }
+
+  const toStart = entryIdx;
+  const toEnd = n - 1 - entryIdx;
+  if (toStart >= toEnd) {
+    return {
+      entryNodeId: makeNodeId(loop.id, entryIdx),
+      exitNodeId: makeNodeId(loop.id, 0),
+      reversed: entryIdx > 0,
+    };
+  }
+
+  return {
+    entryNodeId: makeNodeId(loop.id, entryIdx),
+    exitNodeId: makeNodeId(loop.id, n - 1),
+    reversed: false,
+  };
+}
+
+export function findNearestNode(
+  graph: LinkerGraphState,
+  from: G90Point
+): { node: LinkerNode; dist: number } | null {
+  let best: LinkerNode | null = null;
+  let bestDist = Infinity;
+  for (const node of graph.nodes) {
+    const d = distG90(from, node.point);
+    if (d < bestDist) {
+      bestDist = d;
+      best = node;
+    }
+  }
+  return best ? { node: best, dist: bestDist } : null;
 }
 
 export function pickBestEntryExitNodes(

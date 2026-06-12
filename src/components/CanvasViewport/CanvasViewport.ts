@@ -28,7 +28,9 @@ export interface CanvasViewportHandle {
   openSvgLayoutFile: (file: File) => Promise<void>;
   loadDemoSvg: () => Promise<void>;
   loadDummyAbcSvg: () => Promise<void>;
+  loadDummyAbcAutoGcode: () => Promise<void>;
   loadDummyWeddingSvg: () => Promise<void>;
+  loadGcodeText: (text: string, fileName: string) => Promise<string>;
   addRectangle: () => void;
   removeObject: (id: string) => void;
   selectObject: (id: string | null) => void;
@@ -71,6 +73,8 @@ export interface CanvasViewportHandle {
   toggleLinkerSimulation: (speedPercent: number) => boolean;
   stopLinkerSimulation: () => void;
   isLinkerSimulationRunning: () => boolean;
+  hasGcodePreviewTour: () => boolean;
+  canRunBedSimulation: () => boolean;
   applyWorkAreaConfig: (state: WorkAreaConfigState) => void;
   onSceneChange: (cb: () => void) => void;
   onHistoryChange: (cb: (state: HistoryState) => void) => void;
@@ -145,7 +149,9 @@ export function mountCanvasViewport(
     },
     loadDemoSvg: () => fabric.loadDemoSvg(),
     loadDummyAbcSvg: () => fabric.loadDummyAbcSvg(),
+    loadDummyAbcAutoGcode: () => fabric.loadDummyAbcAutoGcode(),
     loadDummyWeddingSvg: () => fabric.loadDummyWeddingSvg(),
+    loadGcodeText: (text, fileName) => fabric.loadGcodeText(text, fileName),
     addRectangle: () => fabric.addRectangle(),
     removeObject: (id) => fabric.removeSceneObject(id),
     selectObject: (id) => manager.selectObject(id),
@@ -189,6 +195,8 @@ export function mountCanvasViewport(
     toggleLinkerSimulation: (speedPercent) => fabric.toggleLinkerSimulation(speedPercent),
     stopLinkerSimulation: () => fabric.stopLinkerSimulation(),
     isLinkerSimulationRunning: () => fabric.isLinkerSimulationRunning(),
+    hasGcodePreviewTour: () => fabric.hasGcodePreviewTour(),
+    canRunBedSimulation: () => fabric.canRunBedSimulation(),
     applyWorkAreaConfig: (state) => fabric.applyWorkAreaConfig(state),
     onSceneChange: (cb) => {
       sceneCallbacks.push(cb);

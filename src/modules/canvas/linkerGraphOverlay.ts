@@ -1,7 +1,7 @@
 import { Point, util, type Canvas } from 'fabric';
 import { cncAbsoluteToFabricBed, fabricBedToCncAbsolute } from './cncCoords';
 import type { G90Point, LinkerGraphState, LinkerG90Program } from '../linker/linkerTypes';
-import { nodeById } from '../linker/linkerTypes';
+import { isLinkerStartNodeId, nodeById } from '../linker/linkerTypes';
 
 const NODE_DOT_RADIUS = 4.5;
 
@@ -82,6 +82,7 @@ export function drawLinkerNodeDots(
 
   ctx.save();
   for (const node of graph.nodes) {
+    if (isLinkerStartNodeId(node.id)) continue;
     const { x, y } = g90ToCanvas(canvas, node.point);
     const hovered = node.id === hoveredNodeId;
     const radius = hovered ? NODE_DOT_RADIUS + 1.5 : NODE_DOT_RADIUS;

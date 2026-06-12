@@ -2,6 +2,7 @@ import { Group, Path, Point, util, type FabricObject } from 'fabric';
 import { classifyPathCncType } from '../svg/pathCncGeometry';
 import { fabricBedToCncAbsolute } from '../canvas/cncCoords';
 import { isBedObject } from '../canvas/WorkAreaBed';
+import { isGcodePreviewObject } from '../canvas/pathNodeDots';
 import type { CutLoop, CncLoopType, G90Point } from './linkerTypes';
 import { centroidG90 } from './linkerGeometry';
 
@@ -98,7 +99,7 @@ function extractG90FromCommands(path: Path, commands: PathCommand[]): G90Point[]
 }
 
 function collectPaths(root: FabricObject): Path[] {
-  if (isBedObject(root)) return [];
+  if (isBedObject(root) || isGcodePreviewObject(root)) return [];
   if (root instanceof Path) return [root];
   if (root instanceof Group) return root.getObjects().flatMap((child) => collectPaths(child));
   return [];
@@ -109,7 +110,7 @@ export function collectCutLoops(objects: FabricObject[]): CutLoop[] {
   const loops: CutLoop[] = [];
 
   for (const root of objects) {
-    if (isBedObject(root)) continue;
+    if (isBedObject(root) || isGcodePreviewObject(root)) continue;
     const sourceId = String(root.get('sceneId') ?? root.get('sceneName') ?? `obj-${loops.length}`);
     const paths = collectPaths(root);
 

@@ -52,15 +52,17 @@ import {
   sceneToG90Probe,
 } from './linkerGraphOverlay';
 import { hitTestCutLoop } from './linkerTourOverlay';
+import { drawGcodePreviewNodeDots, GCODE_PREVIEW_ROLE, isGcodePreviewObject } from './pathNodeDots';
 import {
   DEFAULT_LINKER_START_POINT,
   linkerStartFromG90,
   resolveLinkerStartPointCnc,
   type LinkerStartPointConfig,
 } from '../linker/linkerStartPoint';
-import { fabricBedToCncAbsolute } from '../canvas/cncCoords';
+import { cncAbsoluteToFabricBed, fabricBedToCncAbsolute } from '../canvas/cncCoords';
 import { collectCutLoops } from '../linker/linkerPathExtract';
 import { runAutoLink, buildProgramFromGraph } from '../linker/linkerTourBuild';
+import { upsertLinkerStartNode } from '../linker/linkerNodeGraph';
 import {
   addLink,
   buildNodesFromLoops,
@@ -73,10 +75,17 @@ import {
   toggleLoopReversed,
 } from '../linker/linkerNodeGraph';
 import { formatLinkerGcode } from '../linker/gcodeExport';
+import { parseGcodeTap } from '../linker/gcodeImport';
+import {
+  GCODE_G90_POINTS_KEY,
+  gcodePointsToSimMoves,
+  readGcodePointsFromPath,
+} from '../linker/gcodePreview';
 import { LinkerSimulation, type LinkerSimPosition } from '../linker/linkerSimulation';
 import {
   createEmptyGraph,
   flattenLinkerProgram,
+  type G90Move,
   type G90Point,
   type LinkerAutoLinkResult,
   type LinkerG90Program,
@@ -211,6 +220,13 @@ export class FabricCanvas {
     this.clearLongPressTimer();
   };
 
+  private readonly onAfterRenderGcodeOverlay = (opt: { ctx: CanvasRenderingContext2D }) => {
+    const mainCtx = this.canvas.getContext();
+    if (!mainCtx || opt.ctx !== mainCtx) return;
+    drawGcodePreviewNodeDots(opt.ctx, this.canvas, this.existingUserObjects());
+    drawLinkerSimCursor(opt.ctx, this.canvas, this.linkerSimPosition);
+  };
+
   private readonly onAfterRenderLinkerOverlay = (opt: { ctx: CanvasRenderingContext2D }) => {
     if (!this.linkerModeActive) return;
     // after:render also fires for the upper contextTop layer — draw linker art once on main canvas only.
@@ -220,6 +236,7 @@ export class FabricCanvas {
     const topCtx = this.canvas.contextTop;
     if (topCtx) this.canvas.clearContext(topCtx);
 
+    drawGcodePreviewNodeDots(opt.ctx, this.canvas, this.existingUserObjects());
     drawLinkerNodeDots(opt.ctx, this.canvas, this.linkerGraph, this.linkerHoveredNodeId);
     drawLinkerGraphOverlay(opt.ctx, this.canvas, this.linkerGraph, this.linkerProgram, {
       selectedLoopId: this.linkerSelectedLoopId,
@@ -287,6 +304,7 @@ export class FabricCanvas {
       };
     }
 
+    this.canvas.on('after:render', this.onAfterRenderGcodeOverlay);
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
     this.manager.subscribe(() => this.onManagerChange());
     this.canvas.on('selection:created', (e) => this.onCanvasSelection(e.selected?.[0]));
@@ -1433,6 +1451,58 @@ export class FabricCanvas {
     return id;
   }
 
+  /** Plot G90 `.tap` / G-code on the bed (preview overlay — not linker cut art). */
+  async loadGcodeText(text: string, fileName: string): Promise<string> {
+    const g90 = parseGcodeTap(text);
+    if (g90.length < 2) {
+      throw new Error('No G90 X/Y moves found in file.');
+    }
+
+    const bedPts = g90.map((p) => cncAbsoluteToFabricBed(p.x, p.y));
+    const d = bedPts
+      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
+      .join(' ');
+
+    const palette = canvasPalette.getState();
+    const path = new Path(d, {
+      fill: 'transparent',
+      stroke: 'rgba(34, 211, 238, 0.92)',
+      strokeWidth: 2,
+      originX: 'left',
+      originY: 'top',
+      selectable: true,
+      evented: true,
+      cornerColor: palette.handleCorner,
+      cornerStrokeColor: '#1a1a1a',
+      borderColor: '#d1d1d6',
+      transparentCorners: false,
+    });
+    path.set('dataRole', GCODE_PREVIEW_ROLE);
+    path.set(GCODE_G90_POINTS_KEY, g90.map((p) => ({ ...p })));
+    path.set('cncType', 'open');
+    normalizeFabricObjectToCncFrame(path);
+
+    const baseName = fileName.replace(/\.(tap|nc|gcode|gco)$/i, '') || 'gcode';
+    const name = this.uniqueDummyName(`${baseName}.gcode`);
+
+    let newId = '';
+    await this.withoutHistoryAsync(async () => {
+      const id = this.manager.newId();
+      newId = id;
+      stripActionControls(path);
+      this.canvas.add(path);
+      this.manager.addObject({ id, name, fabricRef: path });
+      this.manager.selectObject(id);
+      this.canvas.setActiveObject(path);
+      scheduleImportedBoundsRefresh(path, () => this.canvas.requestRenderAll());
+    });
+
+    markDocumentChanged();
+    this.focusObjectInView(path);
+    this.canvas.requestRenderAll();
+    return newId;
+  }
+
   /** Split a traced_content collection into individual path scene objects (Ctrl+Shift+G). */
   async ungroupTracedCollection(): Promise<boolean> {
     const active = this.canvas.getActiveObject();
@@ -1649,10 +1719,26 @@ export class FabricCanvas {
     });
   }
 
+  /** BK Vector Linker ABC Example 1 — auto-only reference tour. */
+  async loadDummyAbcAutoGcode(): Promise<void> {
+    const res = await fetch('/reference-gcode/ABC1_auto_no_user_edit.tap');
+    if (!res.ok) {
+      throw new Error(`ABC auto G-code not found (HTTP ${res.status})`);
+    }
+    const text = await res.text();
+    await this.loadGcodeText(text, 'ABC1_auto_no_user_edit.tap');
+    console.info('[FabricCanvas] dummy ABC auto G-code loaded');
+  }
+
   async loadStartupDemos(): Promise<void> {
     if (!this.hasBootViewportFit) {
       this.fitBedInView();
       this.hasBootViewportFit = true;
+    }
+    try {
+      await this.loadDummyAbcAutoGcode();
+    } catch (err) {
+      console.warn('[FabricCanvas] default ABC auto G-code dummy failed', err);
     }
     this.canvas.requestRenderAll();
   }
@@ -1848,6 +1934,9 @@ export class FabricCanvas {
       xMm: config.xMm,
       yMm: config.yMm,
     };
+    if (this.linkerGraph) {
+      upsertLinkerStartNode(this.linkerGraph, resolveLinkerStartPointCnc(this.linkerStartPoint));
+    }
     this.stopLinkerSimulation();
     this.rebuildProgramIfTourReady();
     if (options?.notify !== false) {
@@ -2172,18 +2261,50 @@ export class FabricCanvas {
     return this.linkerSim?.running ?? false;
   }
 
+  hasGcodePreviewTour(): boolean {
+    return this.getGcodePreviewMoves() != null;
+  }
+
+  canRunBedSimulation(): boolean {
+    return this.buildBedSimulationMoves().length >= 2;
+  }
+
+  private getGcodePreviewPath(): Path | null {
+    for (const obj of this.existingUserObjects()) {
+      if (isGcodePreviewObject(obj) && obj instanceof Path) return obj;
+    }
+    return null;
+  }
+
+  private getGcodePreviewMoves(): G90Move[] | null {
+    const path = this.getGcodePreviewPath();
+    if (!path) return null;
+    const points = readGcodePointsFromPath(path);
+    if (!points || points.length < 2) return null;
+    return gcodePointsToSimMoves(points);
+  }
+
+  private buildBedSimulationMoves(): G90Move[] {
+    if (this.linkerProgram?.segments.length) {
+      return flattenLinkerProgram(this.linkerProgram);
+    }
+    if (this.linkerModeActive && this.linkerGraph) {
+      const built = buildProgramFromGraph(this.linkerGraph, this.linkerStartPoint, 'linked');
+      if (built.ok && built.program?.segments.length) {
+        this.linkerProgram = built.program;
+        return flattenLinkerProgram(built.program);
+      }
+    }
+    return this.getGcodePreviewMoves() ?? [];
+  }
+
   toggleLinkerSimulation(speedPercent: number): boolean {
     if (this.linkerSim?.running) {
       this.stopLinkerSimulation();
       return false;
     }
 
-    if (!this.linkerProgram) {
-      const built = this.rebuildLinkerProgram();
-      if (!built.ok || !built.program) return false;
-    }
-
-    const moves = flattenLinkerProgram(this.linkerProgram!);
+    const moves = this.buildBedSimulationMoves();
     if (moves.length < 2) return false;
 
     this.linkerSim = new LinkerSimulation({
@@ -2214,9 +2335,7 @@ export class FabricCanvas {
     if (wasRunning) {
       this.onLinkerSimStateChange?.(false);
     }
-    if (this.linkerModeActive) {
-      this.repaintCanvasNow();
-    }
+    this.repaintCanvasNow();
   }
 
   private notifyLinkerSimRunning(running: boolean): void {

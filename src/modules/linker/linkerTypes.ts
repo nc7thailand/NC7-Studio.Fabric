@@ -33,6 +33,17 @@ export interface LinkerLink {
   toNodeId: string;
 }
 
+/** Ordered tour step — partial cuts + through-foam links (Vector Linker auto style). */
+export type LinkerTourStep =
+  | { type: 'link'; fromNodeId: string; toNodeId: string }
+  | {
+      type: 'cut';
+      loopId: string;
+      entryNodeId: string;
+      exitNodeId: string;
+      reversed: boolean;
+    };
+
 /** Node + link graph — source of truth for linker tour. */
 export interface LinkerGraphState {
   loops: CutLoop[];
@@ -42,6 +53,8 @@ export interface LinkerGraphState {
   reversed: Record<string, boolean>;
   /** Resolved cut order (set by Auto link; recomputed on manual edits). */
   tourLoopIds: string[];
+  /** When set, buildLinkedProgram walks these before tourLoopIds (partial contour passes). */
+  tourSteps?: LinkerTourStep[];
 }
 
 export interface LinkerSegment {
@@ -90,6 +103,14 @@ export interface LinkerTour {
   reversed: Record<string, boolean>;
 }
 
+/** Virtual graph node at the blue START marker (not on a cut path). */
+export const LINKER_START_NODE_ID = '@linker-start';
+export const LINKER_START_LOOP_ID = '@linker-start-loop';
+
+export function isLinkerStartNodeId(nodeId: string): boolean {
+  return nodeId === LINKER_START_NODE_ID;
+}
+
 export function makeNodeId(loopId: string, pointIndex: number): string {
   return `${loopId}@${pointIndex}`;
 }
@@ -135,7 +156,7 @@ export function flattenLinkerProgram(program: LinkerG90Program): G90Move[] {
 }
 
 export function createEmptyGraph(loops: CutLoop[]): LinkerGraphState {
-  return { loops, nodes: [], links: [], reversed: {}, tourLoopIds: [] };
+  return { loops, nodes: [], links: [], reversed: {}, tourLoopIds: [], tourSteps: [] };
 }
 
 /** @deprecated */

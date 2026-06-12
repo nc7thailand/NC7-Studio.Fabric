@@ -69,6 +69,12 @@ export function renderFileSidebar(
           <button type="button" class="tools-action-btn" data-dummy-add-abc>Dummy add ABC</button>
           <button type="button" class="tools-action-btn" data-dummy-add-wedding>Dummy add Wedding</button>
         </div>
+        <div class="file-panel-actions file-panel-actions--gcode">
+          <span class="section-title-sm">Load G-code</span>
+          <button type="button" class="tools-action-btn" data-load-gcode-file>From file…</button>
+          <button type="button" class="tools-action-btn" data-load-gcode-ref="abc-auto">ABC1 auto (reference)</button>
+          <button type="button" class="tools-action-btn" data-load-gcode-ref="abc-manual">ABC1 manual (reference)</button>
+        </div>
         ${objectRows}
       </div>
     </aside>
