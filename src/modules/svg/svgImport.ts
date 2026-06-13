@@ -1,5 +1,6 @@
-import { loadSVGFromString, Path, Group, util, type FabricObject } from 'fabric';
+import { config, loadSVGFromString, Path, Group, util, type FabricObject } from 'fabric';
 import type { FabricPlacementLimits } from '../canvas/marginUtils';
+import { getFabricPlacementLimits } from '../canvas/marginUtils';
 import type { WorkAreaConfigState } from '../config/WorkAreaConfig';
 import { canvasPalette } from '../devlab/CanvasPalette';
 import {
@@ -148,6 +149,100 @@ export function parseSvgViewBox(svgText: string): SvgViewBox | null {
   const parts = match[1].trim().split(/[\s,]+/).map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
   return { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] };
+}
+
+/** Physical page size from `width="210mm" height="297mm"` on the root `<svg>`. */
+export function parseSvgPhysicalSizeMm(
+  svgText: string
+): { widthMm: number; heightMm: number } | null {
+  const root = svgText.match(/<svg\b[^>]*>/i)?.[0];
+  if (!root) return null;
+  const wMatch = root.match(/\bwidth\s*=\s*["']([\d.]+)\s*mm["']/i);
+  const hMatch = root.match(/\bheight\s*=\s*["']([\d.]+)\s*mm["']/i);
+  if (!wMatch || !hMatch) return null;
+  const widthMm = Number(wMatch[1]);
+  const heightMm = Number(hMatch[1]);
+  if (!Number.isFinite(widthMm) || !Number.isFinite(heightMm) || widthMm <= 0 || heightMm <= 0) {
+    return null;
+  }
+  return { widthMm, heightMm };
+}
+
+function sandboxSvgImportReviver(element: Element, obj: FabricObject | null): void {
+  if (!obj) return;
+  const fillRule = element.getAttribute('fill-rule');
+  obj.set({
+    strokeUniform: true,
+    objectCaching: false,
+    includeDefaultValues: false,
+    ...(fillRule === 'evenodd' ? { fillRule: 'evenodd' as const } : {}),
+  });
+}
+
+/** Fabric SVG parser stores mm as CSS pixels (DPI); NC7 bed scene uses millimeters. */
+const FABRIC_PX_TO_BED_MM = 25.4 / config.DPI;
+
+/**
+ * Map SVG viewBox user units to bed millimeters (1 unit = 1 mm when width mm matches viewBox).
+ * Used by vector-linker sandbox so art size matches the 1200×600 mm bed grid.
+ */
+export function placeSandboxSvgOnBed(
+  obj: FabricObject,
+  svgText: string,
+  workArea: WorkAreaConfigState
+): void {
+  const vb = parseSvgViewBox(svgText);
+  const limits = getFabricPlacementLimits(
+    workArea.margins,
+    workArea.blockSize.width,
+    workArea.blockSize.height
+  );
+
+  if (!vb || vb.width <= 0 || vb.height <= 0) {
+    scaleToMaxMm(obj, 500);
+    autoPlaceOnBed(obj, [], limits, workArea.objectGap);
+    obj.setCoords();
+    return;
+  }
+
+  const physical = parseSvgPhysicalSizeMm(svgText);
+  const viewBoxUnitToMm = physical ? physical.widthMm / vb.width : 1;
+  const bedMmScale = viewBoxUnitToMm * FABRIC_PX_TO_BED_MM;
+
+  obj.set({
+    originX: 'left',
+    originY: 'top',
+    angle: 0,
+    scaleX: (obj.scaleX ?? 1) * bedMmScale,
+    scaleY: (obj.scaleY ?? 1) * bedMmScale,
+  });
+
+  if (obj instanceof Group) {
+    obj.triggerLayout();
+  }
+  obj.setCoords();
+
+  const bounds = getCncBoundingRect(obj);
+  obj.set({
+    left: (obj.left ?? 0) + (limits.minX - bounds.left),
+    top: (obj.top ?? 0) + (limits.minY - bounds.top),
+  });
+  obj.setCoords();
+}
+
+/** Sandbox import — skip per-path CNC normalize so viewBox→mm placement stays correct. */
+export async function loadSandboxSvgAsGroup(
+  svgText: string,
+  workArea: WorkAreaConfigState
+): Promise<Group> {
+  const { objects, options } = await loadSVGFromString(svgText, sandboxSvgImportReviver);
+  const userObjects = filterGhostNodes(objects).filter((o) => !isLayoutSystemObject(o, workArea));
+  if (userObjects.length === 0) {
+    throw new Error('No layout objects found in SVG (bed/grid filtered out)');
+  }
+  const grouped = groupFabricSvgObjects(userObjects, options);
+  placeSandboxSvgOnBed(grouped, svgText, workArea);
+  return grouped;
 }
 
 /**
@@ -363,6 +458,25 @@ export function isLayoutSystemObject(
   }
 
   return false;
+}
+
+export function prepareSandboxLayoutObject(obj: FabricObject): void {
+  const lock = (target: FabricObject) => {
+    target.set({
+      selectable: false,
+      evented: false,
+      hasControls: false,
+      hasBorders: false,
+      lockMovementX: true,
+      lockMovementY: true,
+      objectCaching: false,
+    });
+    target.setCoords();
+  };
+  lock(obj);
+  if (obj instanceof Group) {
+    for (const child of obj.getObjects()) lock(child);
+  }
 }
 
 export function prepareLayoutObject(obj: FabricObject): void {

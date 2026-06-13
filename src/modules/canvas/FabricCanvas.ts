@@ -16,8 +16,10 @@ import {
   centerObjectInPlacementLimits,
   fabricObjectFromSvg,
   loadSvgLayoutAsGroup,
+  loadSandboxSvgAsGroup,
   NC7_TRACED_COLLECTION_KEY,
   prepareLayoutObject,
+  prepareSandboxLayoutObject,
   scaleToMaxMm,
   TRACED_CONTENT_GROUP_ID,
 } from '../svg/svgImport';
@@ -1396,6 +1398,27 @@ export class FabricCanvas {
     return newId;
   }
 
+  /** Vector-linker sandbox — viewBox mapped to bed mm without per-path CNC normalize drift. */
+  async openSandboxSvgLayout(svgText: string, fileName: string): Promise<string> {
+    const grouped = await loadSandboxSvgAsGroup(svgText, this.workArea);
+
+    let newId = '';
+    await this.withoutHistoryAsync(async () => {
+      const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
+      const name = `${baseName}.svg`;
+
+      prepareSandboxLayoutObject(grouped);
+      const id = this.manager.newId();
+      newId = id;
+      stripActionControls(grouped);
+      this.canvas.add(grouped);
+      this.manager.addObject({ id, name, fabricRef: grouped });
+      this.canvas.requestRenderAll();
+    });
+    markDocumentChanged();
+    return newId;
+  }
+
   async importSvg(svgText: string, name: string, maxMm?: number): Promise<string> {
     const obj = await fabricObjectFromSvg(svgText);
     if (maxMm != null) scaleToMaxMm(obj, maxMm);
@@ -1735,11 +1758,6 @@ export class FabricCanvas {
       this.fitBedInView();
       this.hasBootViewportFit = true;
     }
-    try {
-      await this.loadDummyAbcAutoGcode();
-    } catch (err) {
-      console.warn('[FabricCanvas] default ABC auto G-code dummy failed', err);
-    }
     this.canvas.requestRenderAll();
   }
 
@@ -2045,6 +2063,12 @@ export class FabricCanvas {
     }
     const built = buildProgramFromGraph(this.linkerGraph, this.linkerStartPoint, mode);
     this.linkerProgram = built.ok ? (built.program ?? null) : null;
+  }
+
+  /** No-op when graph/tour not ready — safe during sandbox mount + START drag. */
+  private rebuildProgramIfTourReady(): void {
+    if (!this.linkerGraph) return;
+    this.rebuildProgramFromGraph();
   }
 
   private notifyLinkerTourChange(): void {

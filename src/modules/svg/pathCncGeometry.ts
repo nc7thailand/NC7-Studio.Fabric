@@ -161,6 +161,109 @@ function pathPointToBed(path: Path, px: number, py: number): Point {
   return transformPoint(local, path.calcTransformMatrix());
 }
 
+/** Map SVG user-space mm on path to fabric bed (exact transform). */
+export function pathUserPointToBed(path: Path, svgX: number, svgY: number): Point {
+  return pathPointToBed(path, svgX, svgY);
+}
+
+/** First filled geometry path in a sandbox import group (even-odd letter fill). */
+export function findSandboxFillPath(root: FabricObject | null): Path | null {
+  if (!root) return null;
+  if (root instanceof Path) return root;
+  if (root instanceof Group) {
+    for (const child of root.getObjects()) {
+      if (child instanceof Path) return child;
+      const nested = findSandboxFillPath(child);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+/** Map linker SVG user coords to bed mm via the visible fill path when present. */
+export function sandboxSvgUserPointToBed(root: FabricObject | null, svgX: number, svgY: number): Point {
+  const fillPath = findSandboxFillPath(root);
+  if (fillPath) return pathUserPointToBed(fillPath, svgX, svgY);
+  if (root instanceof Polyline || root instanceof Polygon) return polylineUserPointToBed(root, svgX, svgY);
+  if (root instanceof Path) return pathUserPointToBed(root, svgX, svgY);
+  if (root instanceof Group) return svgUserPointToBed(root, svgX, svgY);
+  return new Point(svgX, svgY);
+}
+
+function polylinePointToBed(poly: Polyline | Polygon, px: number, py: number): Point {
+  const offset = poly.pathOffset ?? new Point(0, 0);
+  const local = new Point(px - offset.x, py - offset.y);
+  return transformPoint(local, poly.calcTransformMatrix());
+}
+
+/** Map SVG user-space mm on polyline to fabric bed (exact transform, not nearest vertex). */
+export function polylineUserPointToBed(poly: Polyline | Polygon, svgX: number, svgY: number): Point {
+  return polylinePointToBed(poly, svgX, svgY);
+}
+
+/** Map linker/SVG user coordinate to bed mm via nearest vertex on a polyline. */
+export function polylineVertexToBed(poly: Polyline | Polygon, svgX: number, svgY: number): Point {
+  const pts = poly.points ?? [];
+  if (pts.length === 0) return polylinePointToBed(poly, svgX, svgY);
+
+  let best = pts[0];
+  let bestDist = Infinity;
+  for (const p of pts) {
+    const d = Math.hypot(p.x - svgX, p.y - svgY);
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return polylinePointToBed(poly, best.x, best.y);
+}
+
+function getPolylineWorldBounds(poly: Polyline | Polygon): TBBox {
+  const offset = poly.pathOffset ?? new Point(0, 0);
+  const matrix = poly.calcTransformMatrix();
+  const worldPoints = (poly.points ?? []).map((p) =>
+    transformPoint(new Point(p.x - offset.x, p.y - offset.y), matrix)
+  );
+  if (worldPoints.length === 0) {
+    return {
+      left: poly.left ?? 0,
+      top: poly.top ?? 0,
+      width: poly.getScaledWidth(),
+      height: poly.getScaledHeight(),
+    };
+  }
+  return makeBoundingBoxFromPoints(worldPoints);
+}
+
+/** Map SVG user-space coordinates to fabric bed mm using an imported object tree. */
+export function svgUserPointToBed(obj: FabricObject, svgX: number, svgY: number): Point {
+  if (obj instanceof Path) return pathPointToBed(obj, svgX, svgY);
+  if (obj instanceof Polyline || obj instanceof Polygon) return polylineVertexToBed(obj, svgX, svgY);
+  if (obj instanceof Group) {
+    for (const child of obj.getObjects()) {
+      if (child instanceof Path) return pathPointToBed(child, svgX, svgY);
+    }
+    let best: Point | null = null;
+    let bestDist = Infinity;
+    for (const child of obj.getObjects()) {
+      if (child instanceof Polyline || child instanceof Polygon) {
+        for (const p of child.points ?? []) {
+          const d = Math.hypot(p.x - svgX, p.y - svgY);
+          if (d < bestDist) {
+            bestDist = d;
+            best = polylineVertexToBed(child, p.x, p.y);
+          }
+        }
+      } else {
+        const mapped = svgUserPointToBed(child, svgX, svgY);
+        if (best == null) best = mapped;
+      }
+    }
+    if (best) return best;
+  }
+  return new Point(svgX, svgY);
+}
+
 /** World-space bbox from unstroked path vertices. */
 export function getPathWorldBounds(path: Path): TBBox {
   const data = path.path as PathCommand[] | undefined;
@@ -199,6 +302,7 @@ export function getPathWorldBounds(path: Path): TBBox {
 export function getCncBoundingRect(obj: FabricObject): TBBox {
   obj.setCoords();
   if (obj instanceof Path) return getPathWorldBounds(obj);
+  if (obj instanceof Polyline || obj instanceof Polygon) return getPolylineWorldBounds(obj);
   if (obj instanceof Group) {
     const children = obj.getObjects();
     if (children.length === 0) {
@@ -217,7 +321,7 @@ export function getCncBoundingRect(obj: FabricObject): TBBox {
   }
 
   const coords = obj.getCoords();
-  return makeBoundingBoxFromPoints([coords.tl, coords.tr, coords.bl, coords.br]);
+  return makeBoundingBoxFromPoints(coords);
 }
 
 /** Union of CNC path bounds for placement and post-import selection sync. */
@@ -315,16 +419,17 @@ function rectToAbsolutePath(rect: Rect): { d: string; cncType: CncVectorType } {
   const bedHeight = workAreaConfig.getState().blockSize.height;
   const invertY = originSetting.startsWith('lower');
 
-  const ytl = invertY ? bedHeight - coords.tl.y : coords.tl.y;
-  const ytr = invertY ? bedHeight - coords.tr.y : coords.tr.y;
-  const ybr = invertY ? bedHeight - coords.br.y : coords.br.y;
-  const ybl = invertY ? bedHeight - coords.bl.y : coords.bl.y;
+  const [tl, tr, br, bl] = coords;
+  const ytl = invertY ? bedHeight - tl.y : tl.y;
+  const ytr = invertY ? bedHeight - tr.y : tr.y;
+  const ybr = invertY ? bedHeight - br.y : br.y;
+  const ybl = invertY ? bedHeight - bl.y : bl.y;
 
   const commands: PathCommand[] = [
-    ['M', round(coords.tl.x), round(ytl)],
-    ['L', round(coords.tr.x), round(ytr)],
-    ['L', round(coords.br.x), round(ybr)],
-    ['L', round(coords.bl.x), round(ybl)],
+    ['M', round(tl.x), round(ytl)],
+    ['L', round(tr.x), round(ytr)],
+    ['L', round(br.x), round(ybr)],
+    ['L', round(bl.x), round(ybl)],
     ['Z'],
   ];
   return { d: joinPath(commands, digits), cncType: 'closed' };

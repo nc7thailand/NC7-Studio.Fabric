@@ -26,6 +26,7 @@ export interface CanvasViewportHandle {
   exportSvg: () => string;
   saveSvgDownload: (filename?: string) => void;
   openSvgLayoutFile: (file: File) => Promise<void>;
+  importSandboxSvgText: (svgText: string, name: string) => Promise<void>;
   loadDemoSvg: () => Promise<void>;
   loadDummyAbcSvg: () => Promise<void>;
   loadDummyAbcAutoGcode: () => Promise<void>;
@@ -145,6 +146,10 @@ export function mountCanvasViewport(
     openSvgLayoutFile: async (file: File) => {
       const text = await file.text();
       await fabric.openSvgLayout(text, file.name);
+      return null;
+    },
+    importSandboxSvgText: async (svgText, name) => {
+      await fabric.openSandboxSvgLayout(svgText, name);
       return null;
     },
     loadDemoSvg: () => fabric.loadDemoSvg(),

@@ -62,6 +62,7 @@ Copied into `screenshots/`:
 
 | File | What it shows |
 |------|----------------|
+| `ABC1-noLink.png` | ABC after load in VectorLinker — save without Auto Link (transformed polyline, no green links) |
 | `abc-linked-full-window-vm.png` | ABC linked — full Vector Linker window in VMware Win11 |
 | `vl-start-screen-toolbar.png` | VL start screen + toolbar icons |
 | `abc-unlinked-no-green.png` | ABC before linking (no green links) |

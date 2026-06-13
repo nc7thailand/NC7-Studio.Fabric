@@ -8,6 +8,10 @@ applyFabricCncDefaults();
 const path = typeof window !== 'undefined' ? window.location.pathname : '/';
 if (path.startsWith('/vectorcore')) {
   mountVectorCoreEmbed('#app');
+} else if (path.startsWith('/vector-linker-sandbox')) {
+  import('./pages/vectorLinkerSandbox').then(({ mountVectorLinkerSandbox }) => {
+    mountVectorLinkerSandbox('#app');
+  });
 } else if (path.startsWith('/editor')) {
   import('./pages/fabricEditor').then(({ mountFabricEditor }) => {
     mountFabricEditor('#app');

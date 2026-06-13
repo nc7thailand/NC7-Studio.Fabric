@@ -1,4 +1,9 @@
-import type { FabricObject } from 'fabric';
+import { Group, Path, Point, util, type FabricObject } from 'fabric';
+import {
+  buildAbc1LinkedPolylineFromCommands,
+  type AbsolutePathCommand,
+  type SvgPoint,
+} from './abc1LinkedPolyline';
 import { distG90 } from './linkerGeometry';
 import {
   applyLetterBAutoTour,
@@ -18,10 +23,160 @@ import { LINKER_START_NODE_ID } from './linkerTypes';
 import { collectCutLoops } from './linkerPathExtract';
 import type { LinkerStartPointConfig } from './linkerStartPoint';
 import { resolveLinkerStartPointCnc } from './linkerStartPoint';
-import type { G90Point, LinkerAutoLinkResult, LinkerGraphState } from './linkerTypes';
+import type { G90Point, LinkerAutoLinkResult, LinkerGraphState, LinkerG90Program } from './linkerTypes';
 import { createEmptyGraph, loopById, nodeById } from './linkerTypes';
 
 const TIE_EPS_MM = 0.5;
+type PathCommand = (string | number)[];
+
+const { transformPoint } = util;
+
+function toNum(value: string | number | undefined): number {
+  const n = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function roundMm(n: number): number {
+  return Number(n.toFixed(3));
+}
+
+function fabricBedToG90(point: SvgPoint): G90Point {
+  return { x: roundMm(point.x), y: roundMm(-point.y) };
+}
+
+function pathLocalToBed(path: Path, point: SvgPoint): SvgPoint {
+  const offset = path.pathOffset ?? new Point(0, 0);
+  const bed = transformPoint(
+    new Point(point.x - offset.x, point.y - offset.y),
+    path.calcTransformMatrix()
+  );
+  return { x: bed.x, y: bed.y };
+}
+
+function collectFabricPaths(root: FabricObject): Path[] {
+  if (root instanceof Path) return [root];
+  if (root instanceof Group) return root.getObjects().flatMap((child) => collectFabricPaths(child));
+  return [];
+}
+
+function fabricPathToAbsoluteCommands(path: Path): AbsolutePathCommand[] {
+  const commands: AbsolutePathCommand[] = [];
+  let current: SvgPoint = { x: 0, y: 0 };
+  let subpathStart: SvgPoint = { x: 0, y: 0 };
+
+  for (const cmd of (path.path ?? []) as PathCommand[]) {
+    const op = String(cmd[0]);
+    const relative = op === op.toLowerCase();
+    const upper = op.toUpperCase();
+
+    if (upper === 'M' || upper === 'L') {
+      const raw = { x: toNum(cmd[1]), y: toNum(cmd[2]) };
+      const point = relative ? { x: current.x + raw.x, y: current.y + raw.y } : raw;
+      commands.push({ op: upper === 'M' ? 'M' : 'L', point });
+      current = { ...point };
+      if (upper === 'M') subpathStart = { ...point };
+    } else if (upper === 'H') {
+      const x = toNum(cmd[1]);
+      const point = { x: relative ? current.x + x : x, y: current.y };
+      commands.push({ op: 'L', point });
+      current = { ...point };
+    } else if (upper === 'V') {
+      const y = toNum(cmd[1]);
+      const point = { x: current.x, y: relative ? current.y + y : y };
+      commands.push({ op: 'L', point });
+      current = { ...point };
+    } else if (upper === 'Q') {
+      const rawControl = { x: toNum(cmd[1]), y: toNum(cmd[2]) };
+      const rawPoint = { x: toNum(cmd[3]), y: toNum(cmd[4]) };
+      const control = relative
+        ? { x: current.x + rawControl.x, y: current.y + rawControl.y }
+        : rawControl;
+      const point = relative ? { x: current.x + rawPoint.x, y: current.y + rawPoint.y } : rawPoint;
+      commands.push({ op: 'Q', control, point });
+      current = { ...point };
+    } else if (upper === 'C') {
+      const rawControl1 = { x: toNum(cmd[1]), y: toNum(cmd[2]) };
+      const rawControl2 = { x: toNum(cmd[3]), y: toNum(cmd[4]) };
+      const rawPoint = { x: toNum(cmd[5]), y: toNum(cmd[6]) };
+      const control1 = relative
+        ? { x: current.x + rawControl1.x, y: current.y + rawControl1.y }
+        : rawControl1;
+      const control2 = relative
+        ? { x: current.x + rawControl2.x, y: current.y + rawControl2.y }
+        : rawControl2;
+      const point = relative ? { x: current.x + rawPoint.x, y: current.y + rawPoint.y } : rawPoint;
+      commands.push({ op: 'C', control1, control2, point });
+      current = { ...point };
+    } else if (upper === 'Z') {
+      commands.push({ op: 'Z' });
+      current = { ...subpathStart };
+    }
+  }
+
+  return commands;
+}
+
+function fabricPathToBedCommands(path: Path): AbsolutePathCommand[] {
+  return fabricPathToAbsoluteCommands(path).map((cmd) => {
+    if (cmd.op === 'M' || cmd.op === 'L') {
+      return { op: cmd.op, point: pathLocalToBed(path, cmd.point) };
+    }
+    if (cmd.op === 'Q') {
+      return {
+        op: 'Q',
+        control: pathLocalToBed(path, cmd.control),
+        point: pathLocalToBed(path, cmd.point),
+      };
+    }
+    if (cmd.op === 'C') {
+      return {
+        op: 'C',
+        control1: pathLocalToBed(path, cmd.control1),
+        control2: pathLocalToBed(path, cmd.control2),
+        point: pathLocalToBed(path, cmd.point),
+      };
+    }
+    return cmd;
+  });
+}
+
+function looksLikeAbc1CompoundPath(path: Path): boolean {
+  const commands = (path.path ?? []) as PathCommand[];
+  const moveCount = commands.filter((cmd) => String(cmd[0]).toUpperCase() === 'M').length;
+  const hasCurves = commands.some((cmd) => ['Q', 'C'].includes(String(cmd[0]).toUpperCase()));
+  const label = String(path.get('aria-label') ?? path.get('sceneName') ?? '');
+  return moveCount >= 5 && hasCurves && (label.includes('ABC') || commands.length > 20);
+}
+
+function tryBuildAbc1LinkedProgram(
+  objects: FabricObject[],
+  startConfig: LinkerStartPointConfig
+): LinkerAutoLinkResult | null {
+  const abcPath = objects.flatMap(collectFabricPaths).find(looksLikeAbc1CompoundPath);
+  if (!abcPath) return null;
+
+  const polylineBed = buildAbc1LinkedPolylineFromCommands(fabricPathToBedCommands(abcPath), {
+    start: { x: startConfig.xMm, y: -startConfig.yMm },
+    curveSteps: 32,
+    precision: 3,
+  });
+  if (polylineBed.length < 2) return null;
+
+  const program: LinkerG90Program = {
+    start: resolveLinkerStartPointCnc(startConfig),
+    mode: 'linked',
+    segments: [
+      {
+        kind: 'cut',
+        points: polylineBed.map(fabricBedToG90),
+        sourceId: String(abcPath.get('sceneId') ?? abcPath.get('sceneName') ?? 'ABC1'),
+      },
+    ],
+  };
+
+  const loops = collectCutLoops(objects);
+  return { ok: true, graph: createEmptyGraph(loops), program };
+}
 
 /**
  * Auto link v5 — greedy EPS + BK letter B stem-hub pattern when B is reached:
@@ -34,6 +189,9 @@ export function runAutoLinkGraph(
   startConfig: LinkerStartPointConfig,
   existing?: LinkerGraphState | null
 ): LinkerAutoLinkResult {
+  const abc1Program = tryBuildAbc1LinkedProgram(objects, startConfig);
+  if (abc1Program) return abc1Program;
+
   const loops = collectCutLoops(objects);
   if (loops.length === 0) {
     return { ok: false, reason: 'No cut paths on the bed.' };
