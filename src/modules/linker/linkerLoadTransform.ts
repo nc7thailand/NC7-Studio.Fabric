@@ -64,14 +64,6 @@ function contourCentroid(contour: FlattenedContour): SvgPoint {
   return { x: x / contour.points.length, y: y / contour.points.length };
 }
 
-function sortContoursForLoad(contours: FlattenedContour[]): FlattenedContour[] {
-  return [...contours].sort((a, b) => {
-    const ca = contourCentroid(a);
-    const cb = contourCentroid(b);
-    return ca.x - cb.x || ca.y - cb.y;
-  });
-}
-
 /** First path `d` attribute in SVG text. */
 export function extractFirstPathData(svgText: string): string | null {
   const match = svgText.match(/<path\b[^>]*\bd\s*=\s*"([\s\S]*?)"/i);
@@ -247,8 +239,6 @@ export function formatLinkerFrameSvgFilled(
 ): string {
   const fill = options.fill ?? LINKER_SANDBOX_OBJECT_FILL;
   const stroke = options.stroke ?? '#854d0e';
-  const wireStroke = options.wireStroke ?? '#3b82f6';
-  const wireStrokeWidth = options.wireStrokeWidth ?? 3;
   const pathD = contoursToEvenOddPathD(contours);
   return [
     '<?xml version="1.0" encoding="UTF-8" standalone="no"?>',
@@ -266,6 +256,192 @@ export function isLinkerStartTravelPoint(p: SvgPoint, headroomMm = DEFAULT_START
   return Math.abs(p.x) < 0.001 && Math.abs(p.y + headroomMm) < 0.001;
 }
 
+/** G90 X0 Y20 as a linker-frame point (START headroom band, not on art). */
+export function linkerFrameStartTravelPoint(headroomMm = DEFAULT_START_HEADROOM_MM): SvgPoint {
+  return { x: 0, y: -headroomMm };
+}
+
+export function findNearestWirePointIndex(
+  wirePoints: SvgPoint[],
+  from: SvgPoint
+): number {
+  if (wirePoints.length === 0) return 0;
+  let bestIndex = 0;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < wirePoints.length; i += 1) {
+    const dx = wirePoints[i].x - from.x;
+    const dy = wirePoints[i].y - from.y;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+export interface ContourWireRange {
+  startWireIndex: number;
+  endWireIndex: number;
+  closed: boolean;
+}
+
+/** Wire index span per contour (matches `contoursToPointList` order). */
+export function buildContourWireRanges(contours: readonly FlattenedContour[]): ContourWireRange[] {
+  const ranges: ContourWireRange[] = [];
+  const out: SvgPoint[] = [];
+  for (const contour of contours) {
+    const startWireIndex = out.length;
+    for (const p of contourDisplayPoints(contour)) {
+      const last = out[out.length - 1];
+      if (last && last.x === p.x && last.y === p.y) continue;
+      out.push({ ...p });
+    }
+    const endWireIndex = out.length - 1;
+    if (endWireIndex >= startWireIndex) {
+      ranges.push({ startWireIndex, endWireIndex, closed: contour.closed });
+    }
+  }
+  return ranges;
+}
+
+function sameSvgPoint(a: SvgPoint, b: SvgPoint): boolean {
+  return Math.abs(a.x - b.x) < 0.001 && Math.abs(a.y - b.y) < 0.001;
+}
+
+/** Closed loop hit closure duplicate — resume border at loopStart+1 (e.g. 401 → 15 on B). */
+function loopBorderResumeWireIndex(
+  wi: number,
+  points: readonly SvgPoint[],
+  contourRanges: readonly ContourWireRange[],
+  visited: ReadonlySet<number>
+): number | null {
+  for (const range of contourRanges) {
+    if (!range.closed) continue;
+    if (wi < range.startWireIndex || wi > range.endWireIndex) continue;
+    const loopStart = range.startWireIndex;
+    if (wi <= loopStart) continue;
+    if (!sameSvgPoint(points[wi], points[loopStart])) continue;
+    const next = loopStart + 1;
+    if (next > range.endWireIndex || visited.has(next)) continue;
+    return next;
+  }
+  return null;
+}
+
+/**
+ * Walk wire indices forward on Border Path segments only.
+ * Stops before the next Link Path unless that segment index is in `connectedLinkSegmentIndices`.
+ */
+export function buildWireTourUntilUnconnectedLink(
+  points: readonly SvgPoint[],
+  linkSegmentFlags: readonly boolean[],
+  connectedLinkSegmentIndices: ReadonlySet<number>,
+  startWireIndex = 0,
+  /** 1-based border node → 1-based border node (user link chords). */
+  userBorderLinks?: ReadonlyMap<number, number>,
+  contourRanges: readonly ContourWireRange[] = []
+): number[] {
+  const wirePointCount = points.length;
+  if (wirePointCount <= 0) return [];
+  const start = Math.max(0, Math.min(wirePointCount - 1, startWireIndex));
+  const forward: number[] = [start];
+  const visited = new Set<number>([start]);
+  let wi = start;
+
+  for (let guard = 0; guard < wirePointCount * 2 + (userBorderLinks?.size ?? 0) + 8; guard += 1) {
+    const userTarget = userBorderLinks?.get(wi + 1);
+    if (userTarget != null) {
+      const jump = userTarget - 1;
+      if (jump >= 0 && jump < wirePointCount && jump !== wi) {
+        wi = jump;
+        forward.push(wi);
+        visited.add(wi);
+        continue;
+      }
+    }
+
+    if (wi >= linkSegmentFlags.length) break;
+    if (linkSegmentFlags[wi] && !connectedLinkSegmentIndices.has(wi)) {
+      const resume = loopBorderResumeWireIndex(wi, points, contourRanges, visited);
+      if (resume != null) {
+        wi = resume;
+        forward.push(wi);
+        visited.add(wi);
+        continue;
+      }
+      break;
+    }
+
+    wi += 1;
+    if (wi >= wirePointCount) break;
+    forward.push(wi);
+    visited.add(wi);
+  }
+
+  return forward;
+}
+
+/**
+ * Sandbox sim tour: START → obeying link/border forward → retrace → START.
+ * Returned indices map to sim steps (0 = START, i+1 = geometry wire i).
+ */
+export function buildSandboxLinkObeyingTourStepIndices(
+  points: readonly SvgPoint[],
+  linkSegmentFlags: readonly boolean[],
+  connectedLinkSegmentIndices: ReadonlySet<number>,
+  startWireIndex = 0,
+  userBorderLinks?: ReadonlyMap<number, number>,
+  contourRanges: readonly ContourWireRange[] = []
+): number[] {
+  const forwardGeo = buildWireTourUntilUnconnectedLink(
+    points,
+    linkSegmentFlags,
+    connectedLinkSegmentIndices,
+    startWireIndex,
+    userBorderLinks,
+    contourRanges
+  );
+  if (forwardGeo.length === 0) return [0];
+
+  const forwardSteps = [0, ...forwardGeo.map((geoIndex) => geoIndex + 1)];
+  const backSteps = [...forwardGeo].reverse().slice(1).map((geoIndex) => geoIndex + 1);
+  return [...forwardSteps, ...backSteps, 0];
+}
+
+/** Rotate closed wire tour so cutting begins at `startIndex` (first link entry). */
+export function rotateWirePoints<T>(items: readonly T[], startIndex: number): T[] {
+  if (items.length === 0 || startIndex <= 0) return [...items];
+  const i = startIndex % items.length;
+  return [...items.slice(i), ...items.slice(0, i)];
+}
+
+function boundsFromPoints(points: SvgPoint[]): FlattenedContour['bounds'] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/** Rotate closed contour entry to the vertex nearest `target` (A loop start from START). */
+export function rotateClosedContourEntryToNearest(
+  contour: FlattenedContour,
+  target: SvgPoint
+): FlattenedContour {
+  if (!contour.closed || contour.points.length === 0) return contour;
+  const entryIdx = findNearestWirePointIndex(contour.points, target);
+  if (entryIdx === 0) return contour;
+  const points = rotateWirePoints(contour.points, entryIdx);
+  return { ...contour, points, bounds: boundsFromPoints(points) };
+}
+
 export function buildLinkerNoLinkFromPathData(
   pathData: string,
   options: LinkerLoadTransformOptions = {}
@@ -274,8 +450,18 @@ export function buildLinkerNoLinkFromPathData(
   const startHeadroomMm = options.startHeadroomMm ?? DEFAULT_START_HEADROOM_MM;
   const commands = parseSvgPathData(pathData);
   const rawContours = flattenPathContours(commands, options);
-  const sorted = sortContoursForLoad(rawContours);
-  const { contours, viewBox } = shiftContoursToLinkerFrame(sorted, startHeadroomMm, precision);
+  // Contour order = path `d` subpath order (each M…Z in SVG), used for loop labels 1…N.
+  const { contours: shiftedContours, viewBox } = shiftContoursToLinkerFrame(
+    rawContours,
+    startHeadroomMm,
+    precision
+  );
+  const startTravel = linkerFrameStartTravelPoint(startHeadroomMm);
+  const contours = shiftedContours.map((contour, index) =>
+    index === 0 && contour.closed
+      ? rotateClosedContourEntryToNearest(contour, startTravel)
+      : contour
+  );
   const contourFillRoles = classifyContourFillRoles(contours);
   const points = contoursToPointList(contours);
   const linkSegmentFlags = classifyWireLinkSegments(points, contours, contourFillRoles);

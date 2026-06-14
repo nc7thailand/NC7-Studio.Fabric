@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import {
   buildLinkerNoLinkFromSvgText,
   isLinkerStartTravelPoint,
+  buildWireTourUntilUnconnectedLink,
 } from './linkerLoadTransform';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,10 +42,25 @@ function verify(label: string, svgPath: string): void {
   console.log(`  link paths (through foam): ${linkPaths} / ${result.linkSegmentFlags.length} segments`);
   console.log(`  border paths (contour edge): ${borderPaths} / ${result.borderSegmentFlags.length} segments`);
   console.log(`  points: ${result.points.length}`);
+  result.contours.forEach((contour, index) => {
+    const role = result.contourFillRoles[index];
+    const node = contour.points[0];
+    console.log(
+      `  loop ${index + 1} (${role}): start ${node?.x?.toFixed(4)}, ${node?.y?.toFixed(4)} · ${contour.points.length} pts`
+    );
+  });
   console.log(
     `  viewBox: ${result.viewBox.minX} ${result.viewBox.minY} ${result.viewBox.width} ${result.viewBox.height}`
   );
   console.log(`  first point: ${result.points[0]?.x}, ${result.points[0]?.y}`);
+  const tourWire = buildWireTourUntilUnconnectedLink(
+    result.points,
+    result.linkSegmentFlags,
+    new Set()
+  );
+  console.log(
+    `  sim tour (no wire links connected): ${tourWire.length} wire pts · ends wire[${tourWire[tourWire.length - 1]}]`
+  );
   console.log(`  includes START (0,-20): ${hasStart ? 'YES (bad)' : 'no (ok)'}`);
   console.log(`  svg bytes: ${result.svgText.length}`);
 

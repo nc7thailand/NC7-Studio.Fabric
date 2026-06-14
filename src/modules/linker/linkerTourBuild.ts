@@ -21,6 +21,10 @@ export function runAutoLink(
   return runAutoLinkGraph(objects, startConfig, existingGraph);
 }
 
+/** Sandbox NoLink wire model — NNOE + Book (see AUTO_LINK_DRAFT.md). */
+export { runAutoLinkNnoeBook, linkerStartToSvgFramePoint } from './linkerAutoLinkNnoe';
+export type { AutoLinkNnoeInput, AutoLinkNnoeResult } from './linkerAutoLinkNnoe';
+
 /** @deprecated Use buildProgramFromGraph */
 export function buildProgramFromTour(): LinkerProgramBuildResult {
   return { ok: false, reason: 'Loop-order tour removed — use link graph.' };

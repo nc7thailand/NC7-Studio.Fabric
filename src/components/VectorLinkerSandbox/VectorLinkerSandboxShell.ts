@@ -9,12 +9,23 @@ import {
 import {
   buildLinkerNoLinkFromSvgText,
   formatLinkerFrameSvgFilled,
+  findNearestWirePointIndex,
+  linkerFrameStartTravelPoint,
+  buildSandboxLinkObeyingTourStepIndices,
+  buildContourWireRanges,
   LINKER_SANDBOX_OBJECT_FILL,
   sandboxCanvasViewBox,
   type LinkerLoadTransformResult,
 } from '../../modules/linker/linkerLoadTransform';
+import {
+  runAutoLinkNnoeBook,
+  linkerStartToSvgFramePoint,
+} from '../../modules/linker/linkerAutoLinkNnoe';
+import { LinkerSimulation } from '../../modules/linker/linkerSimulation';
+import type { G90Move } from '../../modules/linker/linkerTypes';
 import { sandboxSvgUserPointToBed } from '../../modules/svg/pathCncGeometry';
 import sandboxDefaultSvgText from '../../assets/vector-linker-sandbox/ABC1.svg?raw';
+import abc1LinkedReferenceSvgText from '../../assets/vector-linker-sandbox/ABC1-linked.svg?raw';
 
 const { transformPoint } = util;
 
@@ -54,12 +65,31 @@ const SANDBOX_NODE_DOT_FILL = '#ef4444';
 const SANDBOX_NODE_DOT_STROKE = '#991b1b';
 const SANDBOX_LOOP_NODE_FILL = '#22c55e';
 const SANDBOX_LOOP_NODE_STROKE = '#14532d';
-const SANDBOX_LOOP_MARKER_RADIUS = 7;
+const SANDBOX_LOOP_MARKER_RADIUS = 5;
+const SANDBOX_BORDER_NODE_LABEL_FONT =
+  '500 2.6px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+const SANDBOX_BORDER_NODE_LABEL_OFFSET_X = 1.2;
+const SANDBOX_BORDER_NODE_LABEL_OFFSET_Y = -0.6;
+const SANDBOX_BORDER_NODE_LABEL_FILL = '#cbd5e1';
+const SANDBOX_START_LINK_STROKE = '#22c55e';
+const SANDBOX_START_LINK_STROKE_WIDTH = 4;
+const SANDBOX_NEAREST_START_DOT_RADIUS = 9;
+const SANDBOX_NEAREST_START_DOT_FILL = '#f59e0b';
+const SANDBOX_NEAREST_START_DOT_STROKE = '#92400e';
+const SANDBOX_USER_LINK_STROKE = '#ef4444';
+const SANDBOX_USER_LINK_STROKE_WIDTH = 4;
+const SANDBOX_BED_POINT_EPS_MM = 0.05;
+/** Steady G1 feed for sandbox auto-play (mm/min). */
+const SANDBOX_SIM_FEED_MM_MIN = 5000;
 const PANEL_COORD_MIN_WRAP = 96;
 const PANEL_POLYLINE_PAIRS_PER_ROW = 4;
 const PANEL_PATH_WRAP = true;
 /** Sandbox default — Inkscape ABC1 (1299×600 mm), bundled at build time. */
 const SANDBOX_AUTO_LOAD_SVG_NAME = 'ABC1.svg';
+
+function sameBedPointMm(a: Point, b: Point, eps = SANDBOX_BED_POINT_EPS_MM): boolean {
+  return Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps;
+}
 
 function buildLineStarts(xml: string): number[] {
   const lineStarts: number[] = [];
@@ -396,15 +426,32 @@ export class VectorLinkerSandboxShell {
   private linkerLoad: LinkerLoadTransformResult | null = null;
   private geometrySteps: SandboxStep[] = [];
   private linked = false;
+  /** Wire segment indices (wire[i]→wire[i+1]) allowed during sim — step-by-step linking adds these. */
+  private connectedLinkSegments = new Set<number>();
+  /** User link chords between numbered border nodes (1-based from → to). */
+  private userBorderLinks = new Map<number, number>();
+  private referenceTourStepIndices: number[] | null = null;
+  private autoLinkMode: 'abc1-reference' | 'nnoe-greedy' | null = null;
   private lines: SvgXmlLine[] = [];
   private steps: SandboxStep[] = [];
   private currentStep = 0;
   private playing = false;
-  private playTimer: number | null = null;
+  private linkerSim: LinkerSimulation | null = null;
+  private simPlaybackBed: Point | null = null;
+  private simTourStepIndices: number[] = [];
   private textPanelKeyHandler: ((event: KeyboardEvent) => void) | null = null;
   private noLinkApplied = false;
   private readonly onCanvasAfterRender = (opt: { ctx: CanvasRenderingContext2D }) => {
+    const fabric = this.canvas?.fabric.canvas;
+    if (!fabric) return;
+    // after:render fires for main + upper canvas — overlay on upper leaves zoom ghost trails.
+    const mainCtx = fabric.getContext();
+    if (!mainCtx || opt.ctx !== mainCtx) return;
+    if (fabric.contextTop) fabric.clearContext(fabric.contextTop);
     this.drawWireCursor(opt.ctx);
+  };
+  private readonly onCanvasViewportChange = () => {
+    this.repaintSandboxCanvas();
   };
 
   constructor(mountSelector = '#app') {
@@ -425,7 +472,10 @@ export class VectorLinkerSandboxShell {
     }
 
     this.canvas = mountCanvasViewport(mountEl, canvasEl);
-    this.canvas.fabric.canvas.on('after:render', this.onCanvasAfterRender);
+    const fabricCanvas = this.canvas.fabric.canvas;
+    fabricCanvas.on('after:render', this.onCanvasAfterRender);
+    fabricCanvas.on('mouse:wheel', this.onCanvasViewportChange);
+    fabricCanvas.on('mouse:up', this.onCanvasViewportChange);
     this.canvas.fabric.canvas.selection = false;
     this.canvas.fabric.canvas.skipTargetFind = true;
     this.canvas.setLinkerStartPoint(SANDBOX_START_POINT);
@@ -461,11 +511,47 @@ export class VectorLinkerSandboxShell {
     await this.loadSvgText(sandboxDefaultSvgText, SANDBOX_AUTO_LOAD_SVG_NAME);
   }
 
+  /** Connect numbered border nodes with a link chord (1-based wire order labels). */
+  connectBorderLink(fromNode: number, toNode: number): boolean {
+    const load = this.linkerLoad;
+    if (!load?.points.length) return false;
+    const loopStarts = this.getLoopStartWireNodeNumbers();
+    if (
+      !Number.isFinite(fromNode) ||
+      !Number.isFinite(toNode) ||
+      fromNode < 1 ||
+      toNode < 1 ||
+      fromNode > load.points.length ||
+      toNode > load.points.length ||
+      fromNode === toNode ||
+      loopStarts.has(fromNode) ||
+      loopStarts.has(toNode)
+    ) {
+      return false;
+    }
+    this.userBorderLinks.set(fromNode, toNode);
+    this.syncStepUi();
+    return true;
+  }
+
   destroy(): void {
     this.stop();
     this.unbindTextPanel();
-    this.canvas?.fabric.canvas.off('after:render', this.onCanvasAfterRender);
+    const fabricCanvas = this.canvas?.fabric.canvas;
+    if (fabricCanvas) {
+      fabricCanvas.off('after:render', this.onCanvasAfterRender);
+      fabricCanvas.off('mouse:wheel', this.onCanvasViewportChange);
+      fabricCanvas.off('mouse:up', this.onCanvasViewportChange);
+    }
     this.canvas?.dispose();
+  }
+
+  /** Full repaint after viewport zoom/pan — avoids stale overlay smears. */
+  private repaintSandboxCanvas(): void {
+    const fabricCanvas = this.canvas?.fabric.canvas;
+    if (!fabricCanvas) return;
+    fabricCanvas.cancelRequestedRender();
+    fabricCanvas.requestRenderAll();
   }
 
   private render(): string {
@@ -536,6 +622,10 @@ export class VectorLinkerSandboxShell {
 
     this.root.querySelector('#vls-link-apply')?.addEventListener('click', () => {
       this.applyLink();
+    });
+
+    this.root.querySelector('#vls-link-auto')?.addEventListener('click', () => {
+      this.applyAutoLink();
     });
 
     this.root.querySelector('#vls-link-sim')?.addEventListener('click', () => {
@@ -614,12 +704,17 @@ export class VectorLinkerSandboxShell {
     this.noLinkApplied = loaded.noLinkApplied;
     this.linkerLoad = loaded.linkerLoad;
     this.linked = false;
+    this.connectedLinkSegments.clear();
+    this.userBorderLinks.clear();
+    this.referenceTourStepIndices = null;
+    this.autoLinkMode = null;
     this.lines = splitXmlLines(loaded.panelXml);
-    this.steps =
+    const geometryOnly =
       loaded.linkerLoad != null
         ? buildStepsFromLinkerLoad(loaded.linkerLoad, loaded.panelXml)
         : parseSvgSteps(loaded.panelXml);
-    this.geometrySteps = this.steps.map((step) => ({ ...step }));
+    this.geometrySteps = geometryOnly.map((step) => ({ ...step }));
+    this.steps = buildLinkedSimSteps(this.geometrySteps);
     this.currentStep = 0;
     this.stopPlayback();
     this.importRoot = null;
@@ -650,7 +745,7 @@ export class VectorLinkerSandboxShell {
     await this.loadSvgText(await file.text(), file.name);
   }
 
-  /** Step 4 — START at G90 X0 Y20 only; geometry object unchanged (no point in polyline). */
+  /** Link — prepend START only; geometry tour order unchanged. */
   private applyLink(): void {
     if (this.geometrySteps.length === 0) return;
     if (this.linked) {
@@ -666,6 +761,44 @@ export class VectorLinkerSandboxShell {
     if (this.importRoot) applySandboxVisibleStyle(this.importRoot);
     this.syncStepUi();
     this.focusTextPanel();
+  }
+
+  /** Auto — NNOE + Book engine (linkerAutoLinkNnoe); legacy graph engine unchanged. */
+  private applyAutoLink(): void {
+    const load = this.linkerLoad;
+    if (!load?.points.length) return;
+
+    this.stopPlayback();
+    const loopStarts = this.getLoopStartWireNodeNumbers();
+    const result = runAutoLinkNnoeBook({
+      load,
+      loopStartNodes: loopStarts,
+      startSvg: linkerStartToSvgFramePoint(SANDBOX_START_POINT),
+      referenceLinkedSvgText: abc1LinkedReferenceSvgText,
+    });
+
+    if (!result.ok) {
+      console.warn('[VectorLinkerSandbox] Auto Link failed:', result.reason);
+      this.syncStepUi();
+      return;
+    }
+
+    this.userBorderLinks.clear();
+    for (const [fromNode, toNode] of result.links) {
+      this.userBorderLinks.set(fromNode, toNode);
+    }
+    this.referenceTourStepIndices = result.tourStepIndices ?? null;
+    this.autoLinkMode = result.mode ?? null;
+
+    if (!this.linked) {
+      this.steps = buildLinkedSimSteps(this.geometrySteps);
+      this.linked = true;
+    }
+    this.currentStep = 0;
+    if (this.importRoot) applySandboxVisibleStyle(this.importRoot);
+    this.syncStepUi();
+    this.focusTextPanel();
+    this.repaintSandboxCanvas();
   }
 
   private updateLinkButton(): void {
@@ -760,6 +893,7 @@ export class VectorLinkerSandboxShell {
   }
 
   private setStep(next: number): void {
+    if (this.playing) this.stopPlayback();
     if (this.steps.length === 0) {
       this.currentStep = 0;
       this.syncStepUi();
@@ -774,24 +908,43 @@ export class VectorLinkerSandboxShell {
       this.stop();
       return;
     }
-    if (this.steps.length === 0) return;
+    if (this.steps.length < 2) return;
+
+    const fromIndex = 0;
+    this.currentStep = fromIndex;
+    this.simTourStepIndices = this.buildSimTourStepIndices();
+    const moves = this.buildMovesFromTourStepIndices(this.simTourStepIndices);
+    if (moves.length < 2) return;
+
     this.playing = true;
-    this.playTimer = window.setInterval(() => {
-      if (this.currentStep >= this.steps.length - 1) {
-        this.stop();
-        return;
-      }
-      this.setStep(this.currentStep + 1);
-    }, 120);
+    this.simPlaybackBed = null;
+    this.linkerSim = new LinkerSimulation({
+      moves,
+      feedRate: SANDBOX_SIM_FEED_MM_MIN,
+      speedPercent: 100,
+      onFrame: (pos) => {
+        this.simPlaybackBed = this.g90PointToBed(pos.cnc);
+        const tourIndex = Math.min(pos.moveIndex, this.simTourStepIndices.length - 1);
+        this.currentStep = this.simTourStepIndices[tourIndex] ?? fromIndex;
+        this.syncStepUi();
+      },
+      onComplete: () => {
+        this.linkerSim = null;
+        this.simPlaybackBed = null;
+        this.playing = false;
+        this.currentStep = fromIndex;
+        this.syncStepUi();
+      },
+    });
+    this.linkerSim.start();
     this.syncStepUi();
   }
 
   private stopPlayback(): void {
     this.playing = false;
-    if (this.playTimer != null) {
-      window.clearInterval(this.playTimer);
-      this.playTimer = null;
-    }
+    this.linkerSim?.stop();
+    this.linkerSim = null;
+    this.simPlaybackBed = null;
   }
 
   private stop(): void {
@@ -804,10 +957,11 @@ export class VectorLinkerSandboxShell {
     const readout = this.root.querySelector('#vls-step-readout');
     if (readout instanceof HTMLElement) {
       const mode = this.noLinkApplied ? 'NoLink' : 'raw';
+      const feedLabel = this.playing ? ` · F${SANDBOX_SIM_FEED_MM_MIN}` : '';
       readout.textContent = step
         ? step.source === 'start'
-          ? `Step ${step.index + 1}/${this.steps.length} · G90 · START · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)}`
-          : `Step ${step.index + 1}/${this.steps.length} · ${mode} · ${step.source} · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)} · line ${step.lineNumber}`
+          ? `Step ${step.index + 1}/${this.steps.length}${feedLabel} · G90 · START · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)}`
+          : `Step ${step.index + 1}/${this.steps.length}${feedLabel} · ${mode} · ${step.source} · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)} · line ${step.lineNumber}`
         : this.lines.length > 0
           ? `No SVG points parsed · ${mode}`
           : 'No SVG loaded';
@@ -826,8 +980,20 @@ export class VectorLinkerSandboxShell {
               return `${this.linkerLoad.contours.length} loops (${outer} outer · ${internal} hole) · ${borderPaths} border · `;
             })()
           : '';
+      const userLinks =
+        this.userBorderLinks.size > 0
+          ? ` · links ${[...this.userBorderLinks.entries()]
+              .map(([from, to]) => `${from}→${to}`)
+              .join(', ')}`
+          : '';
+      const autoMode =
+        this.autoLinkMode === 'abc1-reference'
+          ? ' · VL ref tour'
+          : this.autoLinkMode === 'nnoe-greedy'
+            ? ' · NNOE'
+            : '';
       loadMode.textContent = this.noLinkApplied
-        ? `Sandbox · START X0 Y20 · ${loops}${linkLabel} · ${this.geometrySteps.length} pts · ${sync}`
+        ? `Sandbox · START X0 Y20 · ${loops}border nodes 1–${this.geometrySteps.length}${userLinks}${autoMode} · ${linkLabel} · ${this.geometrySteps.length} pts · ${sync}`
         : `Sandbox · START X0 Y20 · raw SVG · ${sync}`;
     }
 
@@ -852,29 +1018,203 @@ export class VectorLinkerSandboxShell {
   }
 
   private mapStepToBedPoint(step: SandboxStep): Point {
+    return this.g90PointToBed(this.mapStepToG90(step));
+  }
+
+  private mapStepToG90(step: SandboxStep): { x: number; y: number } {
     if (step.source === 'start') {
+      return { x: SANDBOX_START_POINT.xMm, y: SANDBOX_START_POINT.yMm };
+    }
+    return { x: step.point.x, y: -step.point.y };
+  }
+
+  private buildSimTourStepIndices(): number[] {
+    if (this.referenceTourStepIndices?.length) {
+      return this.referenceTourStepIndices;
+    }
+    if (!this.linkerLoad?.linkSegmentFlags.length || this.geometrySteps.length === 0) {
+      return this.buildFullRoundTripStepIndices(0);
+    }
+    const entryWireIndex = this.getNearestGeometryStepIndex();
+    return buildSandboxLinkObeyingTourStepIndices(
+      this.linkerLoad.points,
+      this.linkerLoad.linkSegmentFlags,
+      this.connectedLinkSegments,
+      entryWireIndex >= 0 ? entryWireIndex : 0,
+      this.userBorderLinks,
+      buildContourWireRanges(this.linkerLoad.contours)
+    );
+  }
+
+  /** Full wire round trip when link metadata is unavailable. */
+  private buildFullRoundTripStepIndices(fromIndex: number): number[] {
+    if (this.steps.length <= fromIndex) return [0];
+    const forward = this.steps.slice(fromIndex).map((_, offset) => fromIndex + offset);
+    if (forward.length < 2) return [fromIndex];
+    const back = [...forward].reverse().slice(1);
+    return [...forward, ...back, fromIndex];
+  }
+
+  private buildMovesFromTourStepIndices(tourStepIndices: number[]): G90Move[] {
+    return tourStepIndices.map((stepIndex, tourIndex) => {
+      const step = this.steps[stepIndex];
+      let kind: G90Move['kind'] = step.source === 'start' ? 'link' : 'cut';
+      if (tourIndex > 0 && kind === 'cut') {
+        const prevStepIndex = tourStepIndices[tourIndex - 1];
+        if (prevStepIndex > 0 && stepIndex > 0 && Math.abs(stepIndex - prevStepIndex) > 1) {
+          kind = 'link';
+        }
+      }
+      return {
+        kind,
+        ...this.mapStepToG90(step),
+      };
+    });
+  }
+
+  private g90PointToBed(g90: { x: number; y: number }): Point {
+    if (
+      Math.abs(g90.x - SANDBOX_START_POINT.xMm) < 0.001 &&
+      Math.abs(g90.y - SANDBOX_START_POINT.yMm) < 0.001
+    ) {
       const bed = resolveLinkerStartPointMm(SANDBOX_START_POINT);
       return new Point(bed.x, bed.y);
     }
-    return this.mapLinkerSvgPointToBed(step.point.x, step.point.y);
+    return this.mapLinkerSvgPointToBed(g90.x, -g90.y);
   }
 
   private mapLinkerSvgPointToBed(svgX: number, svgY: number): Point {
     return sandboxSvgUserPointToBed(this.importRoot, svgX, svgY);
   }
 
-  /** Closed loop: start/end = same node (first flattened vertex / path M). */
+  /** Index in geometrySteps nearest to G90 START (linker frame 0,-20). */
+  private getNearestGeometryStepIndex(): number {
+    if (this.geometrySteps.length === 0) return -1;
+    return findNearestWirePointIndex(
+      this.geometrySteps.map((step) => step.point),
+      linkerFrameStartTravelPoint()
+    );
+  }
+
+  private getNearestGeometryBedPoint(): Point | null {
+    const idx = this.getNearestGeometryStepIndex();
+    if (idx < 0 || !this.importRoot) return null;
+    const step = this.geometrySteps[idx];
+    return this.mapLinkerSvgPointToBed(step.point.x, step.point.y);
+  }
+
+  /** User-connected link chords between numbered border nodes. */
+  private drawUserBorderLinks(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
+    const load = this.linkerLoad;
+    if (!load?.points.length || this.userBorderLinks.size === 0 || !this.importRoot) return;
+
+    const vpt = fabric.viewportTransform;
+    ctx.save();
+    ctx.strokeStyle = SANDBOX_USER_LINK_STROKE;
+    ctx.lineWidth = SANDBOX_USER_LINK_STROKE_WIDTH;
+    ctx.lineCap = 'round';
+    ctx.setLineDash([8, 6]);
+
+    for (const [fromNode, toNode] of this.userBorderLinks) {
+      const p0 = load.points[fromNode - 1];
+      const p1 = load.points[toNode - 1];
+      if (!p0 || !p1) continue;
+      const aBed = this.mapLinkerSvgPointToBed(p0.x, p0.y);
+      const bBed = this.mapLinkerSvgPointToBed(p1.x, p1.y);
+      const a = vpt ? transformPoint(aBed, vpt) : aBed;
+      const b = vpt ? transformPoint(bBed, vpt) : bBed;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /** Proposed first link: START → nearest wire vertex (green path). */
+  private drawStartToNearestPath(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
+    const nearest = this.getNearestGeometryBedPoint();
+    if (!nearest) return;
+
+    const start = resolveLinkerStartPointMm(SANDBOX_START_POINT);
+    const startBed = new Point(start.x, start.y);
+    const vpt = fabric.viewportTransform;
+    const a = vpt ? transformPoint(startBed, vpt) : startBed;
+    const b = vpt ? transformPoint(nearest, vpt) : nearest;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = SANDBOX_START_LINK_STROKE;
+    ctx.lineWidth = SANDBOX_START_LINK_STROKE_WIDTH;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Nearest wire vertex to START — amber dot (first link target, step-by-step). */
+  private drawNearestStartMarker(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
+    const bed = this.getNearestGeometryBedPoint();
+    if (!bed) return;
+
+    const vpt = fabric.viewportTransform;
+    const point = vpt ? transformPoint(bed, vpt) : bed;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, SANDBOX_NEAREST_START_DOT_RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = SANDBOX_NEAREST_START_DOT_FILL;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = SANDBOX_NEAREST_START_DOT_STROKE;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** Bed positions of closed-loop start nodes (green markers). */
+  private getLoopNodeBedPoints(): Point[] {
+    const contours = this.linkerLoad?.contours;
+    if (!contours?.length || !this.importRoot) return [];
+    return contours
+      .filter((contour) => contour.points.length > 0)
+      .map((contour) => {
+        const node = contour.points[0];
+        return this.mapLinkerSvgPointToBed(node.x, node.y);
+      });
+  }
+
+  /** 1-based wire node numbers at loop M/start — identity only, excluded from link labels and connectBorderLink. */
+  private getLoopStartWireNodeNumbers(): Set<number> {
+    const load = this.linkerLoad;
+    if (!load?.contours.length || !load.points.length) return new Set();
+
+    const nodes = new Set<number>();
+    for (const contour of load.contours) {
+      if (contour.points.length === 0) continue;
+      const start = contour.points[0];
+      for (let i = 0; i < load.points.length; i += 1) {
+        const p = load.points[i];
+        if (Math.abs(p.x - start.x) < 0.001 && Math.abs(p.y - start.y) < 0.001) {
+          nodes.add(i + 1);
+          break;
+        }
+      }
+    }
+    return nodes;
+  }
+
+  /** Closed loop entry — green ring only (loop identity; not used for linking numbers). */
   private drawClosedLoopNodes(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
     const contours = this.linkerLoad?.contours;
     if (!contours?.length || !this.importRoot) return;
 
     const vpt = fabric.viewportTransform;
     ctx.save();
-    ctx.font = '700 9px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
 
-    contours.forEach((contour, index) => {
+    contours.forEach((contour) => {
       if (contour.points.length === 0) return;
       const node = contour.points[0];
       const bed = this.mapLinkerSvgPointToBed(node.x, node.y);
@@ -886,11 +1226,64 @@ export class VectorLinkerSandboxShell {
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = SANDBOX_LOOP_NODE_STROKE;
       ctx.stroke();
-      ctx.fillStyle = '#0f172a';
-      ctx.fillText(String(index + 1), point.x, point.y);
     });
 
     ctx.restore();
+  }
+
+  /** Wire-order index on every border vertex (1…N) — fixed bed-mm monospace; zoom canvas to read. */
+  private drawBorderNodeOrderLabels(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
+    const load = this.linkerLoad;
+    if (!load?.points.length || !this.importRoot) return;
+
+    const vpt = fabric.viewportTransform;
+    if (!vpt) return;
+
+    ctx.save();
+    ctx.transform(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
+    ctx.font = SANDBOX_BORDER_NODE_LABEL_FONT;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = SANDBOX_BORDER_NODE_LABEL_FILL;
+
+    for (const { bed, label } of this.groupBorderNodeLabels(load.points)) {
+      ctx.fillText(
+        label,
+        bed.x + SANDBOX_BORDER_NODE_LABEL_OFFSET_X,
+        bed.y + SANDBOX_BORDER_NODE_LABEL_OFFSET_Y
+      );
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Linkable border node labels only — loop M/start numbers (green ring) are omitted.
+   * Same physical corner may still merge e.g. two non-loop wire indices.
+   */
+  private groupBorderNodeLabels(
+    points: LinkerLoadTransformResult['points']
+  ): Array<{ bed: Point; label: string }> {
+    const loopStarts = this.getLoopStartWireNodeNumbers();
+    const groups = new Map<string, { bed: Point; nodes: number[] }>();
+    for (let index = 0; index < points.length; index += 1) {
+      const node = index + 1;
+      if (loopStarts.has(node)) continue;
+
+      const pt = points[index];
+      const key = `${pt.x.toFixed(3)},${pt.y.toFixed(3)}`;
+      const bed = this.mapLinkerSvgPointToBed(pt.x, pt.y);
+      const group = groups.get(key);
+      if (group) {
+        group.nodes.push(node);
+      } else {
+        groups.set(key, { bed, nodes: [node] });
+      }
+    }
+    return [...groups.values()].map(({ bed, nodes }) => ({
+      bed,
+      label: nodes.join('·'),
+    }));
   }
 
   /** Border Path — wire on contour edge only (no link chords). */
@@ -929,19 +1322,28 @@ export class VectorLinkerSandboxShell {
     // G90 X0 Y20 — always visible.
     drawLinkerStartPoint(ctx, fabric, SANDBOX_START_POINT);
 
-    // Closed-loop nodes (start=end) — show as soon as NoLink art is loaded.
-    this.drawClosedLoopNodes(ctx, fabric);
-
-    if (this.steps.length === 0 || !this.importRoot) return;
+    if (this.steps.length === 0 || !this.importRoot) {
+      this.drawClosedLoopNodes(ctx, fabric);
+      this.drawBorderNodeOrderLabels(ctx, fabric);
+      this.drawStartToNearestPath(ctx, fabric);
+      this.drawNearestStartMarker(ctx, fabric);
+      return;
+    }
 
     this.drawBorderPathSegments(ctx, fabric);
+    this.drawUserBorderLinks(ctx, fabric);
+    this.drawStartToNearestPath(ctx, fabric);
 
     const vpt = fabric.viewportTransform;
+    const loopNodeBedPoints = this.getLoopNodeBedPoints();
+    const nearestBed = this.getNearestGeometryBedPoint();
 
     ctx.save();
     for (const step of this.steps) {
       if (step.source === 'start') continue;
       const bedPoint = this.mapStepToBedPoint(step);
+      if (loopNodeBedPoints.some((loopNode) => sameBedPointMm(bedPoint, loopNode))) continue;
+      if (nearestBed && sameBedPointMm(bedPoint, nearestBed)) continue;
       const point = vpt ? transformPoint(bedPoint, vpt) : bedPoint;
       ctx.beginPath();
       ctx.arc(point.x, point.y, SANDBOX_NODE_DOT_RADIUS, 0, Math.PI * 2);
@@ -953,12 +1355,18 @@ export class VectorLinkerSandboxShell {
     }
     ctx.restore();
 
-    if (!this.linked) return;
+    // Green loop entry rings (order numbers on all border nodes below).
+    this.drawClosedLoopNodes(ctx, fabric);
+
+    this.drawBorderNodeOrderLabels(ctx, fabric);
+
+    // Amber dot — nearest wire point to START (first link entry).
+    this.drawNearestStartMarker(ctx, fabric);
 
     const step = this.steps[this.currentStep];
     if (!step) return;
 
-    const bedPoint = this.mapStepToBedPoint(step);
+    const bedPoint = this.simPlaybackBed ?? this.mapStepToBedPoint(step);
     const point = vpt ? transformPoint(bedPoint, vpt) : bedPoint;
 
     ctx.save();

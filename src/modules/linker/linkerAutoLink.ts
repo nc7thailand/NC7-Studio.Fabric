@@ -1,3 +1,9 @@
+/**
+ * Legacy Auto Link — Fabric loop graph + ABC1 evidence polyline.
+ * Kept unchanged for main editor / BK parity experiments.
+ * Sandbox NoLink wire model: use `linkerAutoLinkNnoe.ts` (`runAutoLinkNnoeBook`).
+ */
+
 import { Group, Path, Point, util, type FabricObject } from 'fabric';
 import {
   buildAbc1LinkedPolylineFromCommands,
