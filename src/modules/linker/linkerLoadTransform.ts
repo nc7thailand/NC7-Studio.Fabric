@@ -201,8 +201,8 @@ export function formatLinkerFrameSvg(points: SvgPoint[], viewBox: LinkerViewBox)
   ].join('\n');
 }
 
-/** Sandbox canvas: yellow fill per closed contour + wire polyline overlay for sim sync. */
-export const LINKER_SANDBOX_OBJECT_FILL = '#ffeb3b';
+/** Sandbox canvas: transparent fill per closed contour + wire polyline overlay for sim sync. */
+export const LINKER_SANDBOX_OBJECT_FILL = 'transparent';
 
 /** ViewBox for sandbox canvas — art only (drop START headroom band from object frame). */
 export function sandboxCanvasViewBox(

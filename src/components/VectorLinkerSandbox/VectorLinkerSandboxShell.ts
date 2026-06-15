@@ -13,7 +13,6 @@ import {
   linkerFrameStartTravelPoint,
   buildSandboxLinkObeyingTourStepIndices,
   buildContourWireRanges,
-  LINKER_SANDBOX_OBJECT_FILL,
   sandboxCanvasViewBox,
   type LinkerLoadTransformResult,
 } from '../../modules/linker/linkerLoadTransform';
@@ -58,7 +57,6 @@ const SANDBOX_SHAPE_STROKE = '#854d0e';
 const SANDBOX_SHAPE_STROKE_WIDTH = 1;
 const SANDBOX_WIRE_STROKE = '#3b82f6';
 const SANDBOX_WIRE_STROKE_WIDTH = 3;
-const SANDBOX_FILL = LINKER_SANDBOX_OBJECT_FILL;
 const SANDBOX_START_POINT: LinkerStartPointConfig = { ...DEFAULT_LINKER_START_POINT };
 const SANDBOX_NODE_DOT_RADIUS = 4;
 const SANDBOX_NODE_DOT_FILL = '#ef4444';
@@ -321,7 +319,7 @@ function applySandboxVisibleStyle(obj: FabricObject): void {
   obj.set({
     stroke: isWirePolyline ? 'transparent' : SANDBOX_SHAPE_STROKE,
     strokeWidth: isWirePolyline ? 0 : SANDBOX_SHAPE_STROKE_WIDTH,
-    fill: isWirePolyline ? 'transparent' : isEvenOddFill ? SANDBOX_FILL : 'transparent',
+    fill: 'transparent',
     ...(isEvenOddFill ? { fillRule: 'evenodd' as const } : {}),
     strokeUniform: true,
     opacity: 1,
@@ -430,6 +428,8 @@ export class VectorLinkerSandboxShell {
   private connectedLinkSegments = new Set<number>();
   /** User link chords between numbered border nodes (1-based from → to). */
   private userBorderLinks = new Map<number, number>();
+  /** Reference / auto tour link chords for overlay (supports multiple per from-node). */
+  private displayLinkChords: Array<[number, number]> = [];
   private referenceTourStepIndices: number[] | null = null;
   private autoLinkMode: 'abc1-reference' | 'nnoe-greedy' | null = null;
   private lines: SvgXmlLine[] = [];
@@ -530,6 +530,7 @@ export class VectorLinkerSandboxShell {
       return false;
     }
     this.userBorderLinks.set(fromNode, toNode);
+    this.displayLinkChords = [];
     this.syncStepUi();
     return true;
   }
@@ -706,6 +707,7 @@ export class VectorLinkerSandboxShell {
     this.linked = false;
     this.connectedLinkSegments.clear();
     this.userBorderLinks.clear();
+    this.displayLinkChords = [];
     this.referenceTourStepIndices = null;
     this.autoLinkMode = null;
     this.lines = splitXmlLines(loaded.panelXml);
@@ -784,6 +786,9 @@ export class VectorLinkerSandboxShell {
     }
 
     this.userBorderLinks.clear();
+    this.displayLinkChords = result.displayLinkChords?.map(([from, to]) => [from, to]) ?? [
+      ...result.links.entries(),
+    ];
     for (const [fromNode, toNode] of result.links) {
       this.userBorderLinks.set(fromNode, toNode);
     }
@@ -980,11 +985,10 @@ export class VectorLinkerSandboxShell {
               return `${this.linkerLoad.contours.length} loops (${outer} outer · ${internal} hole) · ${borderPaths} border · `;
             })()
           : '';
+      const linkChords = this.getActiveLinkChords();
       const userLinks =
-        this.userBorderLinks.size > 0
-          ? ` · links ${[...this.userBorderLinks.entries()]
-              .map(([from, to]) => `${from}→${to}`)
-              .join(', ')}`
+        linkChords.length > 0
+          ? ` · links ${linkChords.map(([from, to]) => `${from}→${to}`).join(', ')}`
           : '';
       const autoMode =
         this.autoLinkMode === 'abc1-reference'
@@ -1103,10 +1107,17 @@ export class VectorLinkerSandboxShell {
     return this.mapLinkerSvgPointToBed(step.point.x, step.point.y);
   }
 
+  /** Link chords currently shown on canvas (auto tour or manual). */
+  private getActiveLinkChords(): ReadonlyArray<readonly [number, number]> {
+    if (this.displayLinkChords.length > 0) return this.displayLinkChords;
+    return [...this.userBorderLinks.entries()];
+  }
+
   /** User-connected link chords between numbered border nodes. */
   private drawUserBorderLinks(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
     const load = this.linkerLoad;
-    if (!load?.points.length || this.userBorderLinks.size === 0 || !this.importRoot) return;
+    const chords = this.getActiveLinkChords();
+    if (!load?.points.length || chords.length === 0 || !this.importRoot) return;
 
     const vpt = fabric.viewportTransform;
     ctx.save();
@@ -1115,7 +1126,7 @@ export class VectorLinkerSandboxShell {
     ctx.lineCap = 'round';
     ctx.setLineDash([8, 6]);
 
-    for (const [fromNode, toNode] of this.userBorderLinks) {
+    for (const [fromNode, toNode] of chords) {
       const p0 = load.points[fromNode - 1];
       const p1 = load.points[toNode - 1];
       if (!p0 || !p1) continue;

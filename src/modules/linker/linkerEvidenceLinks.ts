@@ -20,6 +20,9 @@ export interface ExtractEvidenceLinksOptions {
   minLinkMm?: number;
 }
 
+/** 1-based border node pair (from → to) for link chord overlay. */
+export type LinkChordPair = readonly [fromNode: number, toNode: number];
+
 function sameCoord(a: SvgPoint, b: SvgPoint): boolean {
   return Math.abs(a.x - b.x) < COORD_EPS && Math.abs(a.y - b.y) < COORD_EPS;
 }
@@ -86,20 +89,17 @@ function reachableBorderForward(
   return false;
 }
 
-/**
- * From ordered tour wire indices, extract 1-based user link chords.
- * A chord is a tour step that is not a single border edge (wi → wi+1 on same contour).
- */
-export function extractUserLinksFromTourWireSequence(
+function collectTourLinkChordPairs(
   wireSequence: readonly number[],
   load: LinkerLoadTransformResult,
   options: ExtractEvidenceLinksOptions
-): Map<number, number> {
+): LinkChordPair[] {
   const { points, linkSegmentFlags } = load;
   const ranges = buildContourWireRanges(load.contours);
   const contourOf = buildContourOfWireIndex(ranges, points.length);
   const minLink = options.minLinkMm ?? LINK_MIN_MM;
-  const links = new Map<number, number>();
+  const seen = new Set<string>();
+  const pairs: LinkChordPair[] = [];
 
   for (let i = 0; i < wireSequence.length - 1; i += 1) {
     const fromWi = wireSequence[i];
@@ -121,11 +121,43 @@ export function extractUserLinksFromTourWireSequence(
     const fromNode = fromWi + 1;
     const toNode = toWi + 1;
     if (options.loopStartNodes.has(fromNode) || options.loopStartNodes.has(toNode)) continue;
+
+    const key = `${fromNode}\t${toNode}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push([fromNode, toNode]);
+  }
+
+  return pairs;
+}
+
+/**
+ * From ordered tour wire indices, extract every unique 1-based link chord (display overlay).
+ * Includes same-letter internal paths (e.g. A outer→inner, B outer→stem/bowl).
+ */
+export function extractAllUserLinkPairsFromTourWireSequence(
+  wireSequence: readonly number[],
+  load: LinkerLoadTransformResult,
+  options: ExtractEvidenceLinksOptions
+): LinkChordPair[] {
+  return collectTourLinkChordPairs(wireSequence, load, options);
+}
+
+/**
+ * From ordered tour wire indices, extract 1-based user link chords.
+ * A chord is a tour step that is not a single border edge (wi → wi+1 on same contour).
+ */
+export function extractUserLinksFromTourWireSequence(
+  wireSequence: readonly number[],
+  load: LinkerLoadTransformResult,
+  options: ExtractEvidenceLinksOptions
+): Map<number, number> {
+  const links = new Map<number, number>();
+  for (const [fromNode, toNode] of collectTourLinkChordPairs(wireSequence, load, options)) {
     if (!links.has(fromNode)) {
       links.set(fromNode, toNode);
     }
   }
-
   return links;
 }
 

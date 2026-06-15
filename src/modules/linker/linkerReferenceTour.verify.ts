@@ -40,12 +40,26 @@ const result = runAutoLinkNnoeBook({
 
 console.log('mode:', result.mode);
 console.log('links:', [...result.links.entries()].map(([a, b]) => `${a}→${b}`).join(', '));
+console.log(
+  'display chords:',
+  result.displayLinkChords?.map(([a, b]) => `${a}→${b}`).join(', ')
+);
+console.log('display count:', result.displayLinkChords?.length ?? 0);
 console.log('tour steps:', result.tourStepIndices?.length ?? 0);
 console.log('tour start:', result.tourStepIndices?.slice(0, 20).join(','));
 console.log('tour end:', result.tourStepIndices?.slice(-5).join(','));
 
 if (result.mode !== 'abc1-reference') throw new Error('expected abc1-reference mode');
 if (!result.links.has(3) || result.links.get(3) !== 400) throw new Error('expected 3→400');
+if (!result.displayLinkChords?.some(([from, to]) => from === 6 && to === 12)) {
+  throw new Error('expected 6→12 in displayLinkChords');
+}
+if (!result.displayLinkChords?.some(([from, to]) => from === 207 && to === 748)) {
+  throw new Error('expected 207→748 in displayLinkChords');
+}
+if ((result.displayLinkChords?.length ?? 0) !== 5) {
+  throw new Error(`expected 5 display link chords, got ${result.displayLinkChords?.length ?? 0}`);
+}
 if ((result.tourStepIndices?.length ?? 0) < 500) throw new Error('reference tour too short');
 
 console.log('\nlinkerReferenceTour verify: OK');

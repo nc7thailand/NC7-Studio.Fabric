@@ -9,7 +9,11 @@ import {
   findNearestWirePointIndex,
   type LinkerLoadTransformResult,
 } from './linkerLoadTransform';
-import { tourPolylineToWireIndexSequence } from './linkerEvidenceLinks';
+import {
+  extractAllUserLinkPairsFromTourWireSequence,
+  tourPolylineToWireIndexSequence,
+} from './linkerEvidenceLinks';
+import type { LinkChordPair } from './linkerEvidenceLinks';
 
 const START_HEADROOM_MM = 20;
 const COORD_EPS = 0.05;
@@ -136,8 +140,35 @@ export function buildReferenceSimStepIndices(
   return collapsed;
 }
 
+/** Min chord length for sandbox link overlay (skip ~2 mm mesh retraces on C). */
+export const REFERENCE_TOUR_DISPLAY_LINK_MIN_MM = 8;
+
+/**
+ * ABC1 sandbox overlay — the five essential through-foam link paths only.
+ * Excludes out-and-back retraces (8→7, 12→6, …) and homing chords (400→3, 914→262).
+ */
+export const ABC1_SANDBOX_ESSENTIAL_DISPLAY_LINKS: readonly LinkChordPair[] = [
+  [6, 12], // A outer → A inner
+  [207, 466], // B outer → B stem (upper inner)
+  [207, 748], // B outer → B bowl (lower inner)
+  [3, 400], // A → B
+  [262, 914], // B → C
+];
+
+function filterEssentialDisplayLinks(
+  allPairs: readonly LinkChordPair[],
+  essential: readonly LinkChordPair[]
+): LinkChordPair[] {
+  const key = (pair: LinkChordPair) => `${pair[0]}\t${pair[1]}`;
+  const available = new Set(allPairs.map(key));
+  return essential.filter((pair) => available.has(key(pair))).map(([from, to]) => [from, to]);
+}
+
 export interface Abc1ReferenceAutoLinkResult {
+  /** Cross-letter exit links (legacy map — one target per from-node). */
   links: Map<number, number>;
+  /** Essential link chords for sandbox overlay (five ABC1 paths). */
+  displayLinkChords: LinkChordPair[];
   tourStepIndices: number[];
   entryWireIndex: number;
 }
@@ -151,9 +182,18 @@ export function buildAbc1ReferenceAutoLink(
   const tourPoints = parseLinkedPolylinePoints(linkedSvgText);
   if (!tourPoints) return null;
 
+  const wireSeq = tourPolylineToWireIndexSequence(tourPoints, load.points);
   const links = extractCrossLetterLinksFromReferenceTour(tourPoints, load, loopStartNodes);
+  const allTourLinks = extractAllUserLinkPairsFromTourWireSequence(wireSeq, load, {
+    loopStartNodes,
+    minLinkMm: REFERENCE_TOUR_DISPLAY_LINK_MIN_MM,
+  });
+  const displayLinkChords = filterEssentialDisplayLinks(
+    allTourLinks,
+    ABC1_SANDBOX_ESSENTIAL_DISPLAY_LINKS
+  );
   const tourStepIndices = buildReferenceSimStepIndices(tourPoints, load);
   const entryWireIndex = findNearestWirePointIndex(load.points, tourPoints[1] ?? tourPoints[0]);
 
-  return { links, tourStepIndices, entryWireIndex };
+  return { links, displayLinkChords, tourStepIndices, entryWireIndex };
 }

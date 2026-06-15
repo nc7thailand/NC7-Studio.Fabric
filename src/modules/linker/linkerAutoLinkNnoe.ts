@@ -17,6 +17,7 @@ import {
   buildAbc1ReferenceAutoLink,
   isAbc1SandboxLoad,
 } from './linkerReferenceTour';
+import type { LinkChordPair } from './linkerEvidenceLinks';
 
 const COORD_EPS = 0.001;
 const DIST_EPS = 1e-6;
@@ -36,6 +37,8 @@ export interface AutoLinkNnoeResult {
   reason?: string;
   /** 1-based border node → 1-based border node (user link chords). */
   links: Map<number, number>;
+  /** Full tour link chords for sandbox overlay (reference mode). */
+  displayLinkChords?: LinkChordPair[];
   /** 0-based wire index — nearest vertex to SP (first entry). */
   entryWireIndex: number;
   /** Full sim steps from Vector Linker reference tour (ABC1 only). */
@@ -293,6 +296,7 @@ export function runAutoLinkNnoeBook(input: AutoLinkNnoeInput): AutoLinkNnoeResul
       return {
         ok: true,
         links: reference.links,
+        displayLinkChords: reference.displayLinkChords,
         entryWireIndex: reference.entryWireIndex,
         tourStepIndices: reference.tourStepIndices,
         mode: 'abc1-reference',
