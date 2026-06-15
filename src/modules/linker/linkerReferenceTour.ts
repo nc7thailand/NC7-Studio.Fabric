@@ -18,6 +18,16 @@ import type { LinkChordPair } from './linkerEvidenceLinks';
 const START_HEADROOM_MM = 20;
 const COORD_EPS = 0.05;
 
+/** VL 1VectorLinkerDemo viewBox minY (−220) → sandbox ABC1 viewBox minY (−20). */
+export const VL_DEMO_TO_SANDBOX_Y_OFFSET = 200;
+
+export const ABC1_SANDBOX_REVERSE_LINKED_ASSET = 'ABC1-reverse-linked.svg';
+export const ABC1_SANDBOX_FORWARD_LINKED_ASSET = 'ABC1-forward-linked.svg';
+/** Legacy alias — same tour as reverse ground truth (sandbox frame). */
+export const ABC1_SANDBOX_LINKED_ASSET = 'ABC1-linked.svg';
+
+export type Abc1TourDirection = 'forward' | 'reverse';
+
 export const ABC1_LINKED_REFERENCE_PATHS = [
   '/Users/nc7foamart/Library/CloudStorage/GoogleDrive-parinypusree@gmail.com/My Drive/1VectorLinkerDemo/ABC1-linked.svg.txt',
 ] as const;
@@ -37,6 +47,25 @@ export function parseLinkedPolylinePoints(svgText: string): SvgPoint[] | null {
     }
   }
   return points.length >= 2 ? points : null;
+}
+
+/** True when SVG uses VL demo frame (viewBox minY ≈ −220). */
+export function isVlDemoLinkedSvgFrame(svgText: string): boolean {
+  const match = svgText.match(/viewBox\s*=\s*"([^"]+)"/i);
+  if (!match?.[1]) return false;
+  const minY = Number(match[1].trim().split(/\s+/)[1]);
+  return Number.isFinite(minY) && minY <= -200;
+}
+
+/**
+ * Polyline points in sandbox ABC1.svg frame (Y down, START at 0,−20).
+ * VL demo exports (viewBox −220) are shifted by {@link VL_DEMO_TO_SANDBOX_Y_OFFSET}.
+ */
+export function parseSandboxLinkedPolylinePoints(svgText: string): SvgPoint[] | null {
+  const raw = parseLinkedPolylinePoints(svgText);
+  if (!raw) return null;
+  if (!isVlDemoLinkedSvgFrame(svgText)) return raw;
+  return raw.map((p) => ({ x: p.x, y: p.y + VL_DEMO_TO_SANDBOX_Y_OFFSET }));
 }
 
 export function isAbc1SandboxLoad(load: LinkerLoadTransformResult): boolean {
@@ -116,7 +145,6 @@ export function extractCrossLetterLinksFromReferenceTour(
   return links;
 }
 
-/** Map Vector Linker linked polyline → sandbox step indices (0 = START). */
 export function buildReferenceSimStepIndices(
   tourPoints: readonly SvgPoint[],
   load: LinkerLoadTransformResult
@@ -173,13 +201,13 @@ export interface Abc1ReferenceAutoLinkResult {
   entryWireIndex: number;
 }
 
-/** Build sandbox auto link from Vector Linker ABC1-linked evidence polyline. */
+/** Build sandbox auto link from Vector Linker ABC1 linked polyline (forward or reverse ground truth). */
 export function buildAbc1ReferenceAutoLink(
   linkedSvgText: string,
   load: LinkerLoadTransformResult,
   loopStartNodes: ReadonlySet<number>
 ): Abc1ReferenceAutoLinkResult | null {
-  const tourPoints = parseLinkedPolylinePoints(linkedSvgText);
+  const tourPoints = parseSandboxLinkedPolylinePoints(linkedSvgText);
   if (!tourPoints) return null;
 
   const wireSeq = tourPolylineToWireIndexSequence(tourPoints, load.points);

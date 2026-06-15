@@ -5,13 +5,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { buildLinkerNoLinkFromSvgText } from './linkerLoadTransform';
-import { runAutoLinkNnoeBook } from './linkerAutoLinkNnoe';
-import { linkerStartToSvgFramePoint } from './linkerAutoLinkNnoe';
-import { DEFAULT_LINKER_START_POINT } from './linkerStartPoint';
+import { buildAbc1ReferenceAutoLink } from './linkerReferenceTour';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const abc1 = join(here, '../../assets/vector-linker-sandbox/ABC1.svg');
-const linked = join(here, '../../assets/vector-linker-sandbox/ABC1-linked.svg');
+const assets = join(here, '../../assets/vector-linker-sandbox');
+const abc1 = join(assets, 'ABC1.svg');
+const reverseDemo = join(assets, 'ABC1-reverse-linked.svg');
+const forwardDemo = join(assets, 'ABC1-forward-linked.svg');
+const linkedSandbox = join(assets, 'ABC1-linked.svg');
 
 function loopStarts(load: ReturnType<typeof buildLinkerNoLinkFromSvgText>): Set<number> {
   const nodes = new Set<number>();
@@ -28,38 +29,45 @@ function loopStarts(load: ReturnType<typeof buildLinkerNoLinkFromSvgText>): Set<
 }
 
 const load = buildLinkerNoLinkFromSvgText(readFileSync(abc1, 'utf8'));
-const referenceLinkedSvgText = readFileSync(linked, 'utf8');
 const loopStartNodes = loopStarts(load);
 
-const result = runAutoLinkNnoeBook({
-  load,
-  loopStartNodes,
-  startSvg: linkerStartToSvgFramePoint(DEFAULT_LINKER_START_POINT),
-  referenceLinkedSvgText,
-});
+const reverseFromDemo = buildAbc1ReferenceAutoLink(readFileSync(reverseDemo, 'utf8'), load, loopStartNodes);
+const reverseFromLinked = buildAbc1ReferenceAutoLink(readFileSync(linkedSandbox, 'utf8'), load, loopStartNodes);
+const forward = buildAbc1ReferenceAutoLink(readFileSync(forwardDemo, 'utf8'), load, loopStartNodes);
 
-console.log('mode:', result.mode);
-console.log('links:', [...result.links.entries()].map(([a, b]) => `${a}→${b}`).join(', '));
-console.log(
-  'display chords:',
-  result.displayLinkChords?.map(([a, b]) => `${a}→${b}`).join(', ')
-);
-console.log('display count:', result.displayLinkChords?.length ?? 0);
-console.log('tour steps:', result.tourStepIndices?.length ?? 0);
-console.log('tour start:', result.tourStepIndices?.slice(0, 20).join(','));
-console.log('tour end:', result.tourStepIndices?.slice(-5).join(','));
+if (!reverseFromDemo || !reverseFromLinked || !forward) {
+  throw new Error('failed to parse ABC1 ground truth polylines');
+}
 
-if (result.mode !== 'abc1-reference') throw new Error('expected abc1-reference mode');
-if (!result.links.has(3) || result.links.get(3) !== 400) throw new Error('expected 3→400');
-if (!result.displayLinkChords?.some(([from, to]) => from === 6 && to === 12)) {
-  throw new Error('expected 6→12 in displayLinkChords');
+const reverseTour = reverseFromDemo.tourStepIndices;
+const linkedTour = reverseFromLinked.tourStepIndices;
+const forwardTour = forward.tourStepIndices;
+
+console.log('reverse (demo) steps:', reverseTour.length);
+console.log('reverse start:', reverseTour.slice(0, 14).join(','));
+console.log('forward steps:', forwardTour.length);
+console.log('forward start:', forwardTour.slice(0, 8).join(','));
+
+if (reverseTour.join(',') !== linkedTour.join(',')) {
+  throw new Error('ABC1-reverse-linked.svg must match ABC1-linked.svg tour after sandbox frame');
 }
-if (!result.displayLinkChords?.some(([from, to]) => from === 207 && to === 748)) {
-  throw new Error('expected 207→748 in displayLinkChords');
+
+const expectedReverseStart = '0,1,8,7,6,12,10,11,12,6,5,4,3,400';
+if (reverseTour.slice(0, 14).join(',') !== expectedReverseStart) {
+  throw new Error(`reverse opening mismatch: ${reverseTour.slice(0, 14).join(',')}`);
 }
-if ((result.displayLinkChords?.length ?? 0) !== 5) {
-  throw new Error(`expected 5 display link chords, got ${result.displayLinkChords?.length ?? 0}`);
+
+const expectedForwardStart = '0,1,2,3,400';
+if (forwardTour.slice(0, 5).join(',') !== expectedForwardStart) {
+  throw new Error(`forward opening mismatch: ${forwardTour.slice(0, 5).join(',')}`);
 }
-if ((result.tourStepIndices?.length ?? 0) < 500) throw new Error('reference tour too short');
+
+if (reverseTour.length !== 1047 || forwardTour.length !== 1047) {
+  throw new Error(`expected 1047 tour steps, got reverse=${reverseTour.length} forward=${forwardTour.length}`);
+}
+
+if (reverseTour.join(',') === forwardTour.join(',')) {
+  throw new Error('forward and reverse tours must differ');
+}
 
 console.log('\nlinkerReferenceTour verify: OK');

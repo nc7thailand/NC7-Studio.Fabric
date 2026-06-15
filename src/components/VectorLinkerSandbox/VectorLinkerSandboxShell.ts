@@ -16,15 +16,14 @@ import {
   sandboxCanvasViewBox,
   type LinkerLoadTransformResult,
 } from '../../modules/linker/linkerLoadTransform';
-import {
-  runAutoLinkNnoeBook,
-  linkerStartToSvgFramePoint,
-} from '../../modules/linker/linkerAutoLinkNnoe';
 import { LinkerSimulation } from '../../modules/linker/linkerSimulation';
 import type { G90Move } from '../../modules/linker/linkerTypes';
 import { sandboxSvgUserPointToBed } from '../../modules/svg/pathCncGeometry';
 import sandboxDefaultSvgText from '../../assets/vector-linker-sandbox/ABC1.svg?raw';
-import abc1LinkedReferenceSvgText from '../../assets/vector-linker-sandbox/ABC1-linked.svg?raw';
+import abc1ReverseLinkedSvgText from '../../assets/vector-linker-sandbox/ABC1-reverse-linked.svg?raw';
+import abc1ForwardLinkedSvgText from '../../assets/vector-linker-sandbox/ABC1-forward-linked.svg?raw';
+import type { Abc1TourDirection } from '../../modules/linker/linkerReferenceTour';
+import { buildAbc1ReferenceAutoLink } from '../../modules/linker/linkerReferenceTour';
 
 const { transformPoint } = util;
 
@@ -438,6 +437,8 @@ export class VectorLinkerSandboxShell {
   private cachedTourStepIndices: number[] = [];
   /** Index into cachedTourStepIndices — how far the wire has traveled. */
   private tourProgressIndex = 0;
+  /** VL ground truth polyline: forward vs reverse (two complete tours). */
+  private tourDirection: Abc1TourDirection = 'reverse';
   private autoLinkMode: 'abc1-reference' | 'nnoe-greedy' | null = null;
   private lines: SvgXmlLine[] = [];
   private steps: SandboxStep[] = [];
@@ -578,7 +579,7 @@ export class VectorLinkerSandboxShell {
               <strong>Link</strong>
               <button type="button" class="vls-btn" id="vls-link-apply">Link</button>
               <button type="button" class="vls-btn" id="vls-link-auto">Auto</button>
-              <button type="button" class="vls-btn" id="vls-link-reverse">Reverse</button>
+              <button type="button" class="vls-btn" id="vls-tour-direction" title="Switch Forward / Reverse tour">Reverse</button>
               <button type="button" class="vls-btn" id="vls-link-sim">Sim</button>
               <span class="vls-muted" id="vls-load-mode">Sandbox · START X0 Y20 · โหลดแล้วยังไม่ Link</span>
             </div>
@@ -638,6 +639,10 @@ export class VectorLinkerSandboxShell {
       this.applyAutoLink();
     });
 
+    this.root.querySelector('#vls-tour-direction')?.addEventListener('click', () => {
+      this.toggleTourDirection();
+    });
+
     this.root.querySelector('#vls-link-sim')?.addEventListener('click', () => {
       this.startSimulation();
     });
@@ -676,16 +681,17 @@ export class VectorLinkerSandboxShell {
         this.moveCurrentLine(-1);
       } else if (event.key === 'ArrowLeft') {
         event.preventDefault();
-        this.setStep(this.currentStep - 1);
+        this.setTourProgress(this.tourProgressIndex - 1);
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
-        this.setStep(this.currentStep + 1);
+        this.setTourProgress(this.tourProgressIndex + 1);
       } else if (event.key === 'Home') {
         event.preventDefault();
-        this.setStep(0);
+        this.setTourProgress(0);
       } else if (event.key === 'End') {
         event.preventDefault();
-        this.setStep(this.steps.length - 1);
+        const tour = this.getTourSteps();
+        this.setTourProgress(tour.length > 0 ? tour.length - 1 : this.steps.length - 1);
       } else if (event.key === ' ') {
         event.preventDefault();
         this.togglePlay();
@@ -720,6 +726,7 @@ export class VectorLinkerSandboxShell {
     this.referenceTourStepIndices = null;
     this.cachedTourStepIndices = [];
     this.tourProgressIndex = 0;
+    this.tourDirection = 'reverse';
     this.simMarkersHidden = false;
     this.autoLinkMode = null;
     this.lines = splitXmlLines(loaded.panelXml);
@@ -763,7 +770,7 @@ export class VectorLinkerSandboxShell {
   private applyLink(): void {
     if (this.geometrySteps.length === 0) return;
     if (this.linked) {
-      this.setStep(0);
+      this.setTourProgress(0);
       this.syncStepUi();
       return;
     }
@@ -777,43 +784,38 @@ export class VectorLinkerSandboxShell {
     this.focusTextPanel();
   }
 
-  /** Auto — NNOE + Book engine (linkerAutoLinkNnoe); legacy graph engine unchanged. */
+  /** Auto — load VL ground truth polyline (forward or reverse). */
   private applyAutoLink(): void {
     const load = this.linkerLoad;
     if (!load?.points.length) return;
 
     this.stopPlayback();
     const loopStarts = this.getLoopStartWireNodeNumbers();
-    const result = runAutoLinkNnoeBook({
-      load,
-      loopStartNodes: loopStarts,
-      startSvg: linkerStartToSvgFramePoint(SANDBOX_START_POINT),
-      referenceLinkedSvgText: abc1LinkedReferenceSvgText,
-    });
+    const groundTruthSvg = this.getAbc1GroundTruthSvgText();
+    const reference = buildAbc1ReferenceAutoLink(groundTruthSvg, load, loopStarts);
 
-    if (!result.ok) {
-      console.warn('[VectorLinkerSandbox] Auto Link failed:', result.reason);
+    if (!reference) {
+      console.warn('[VectorLinkerSandbox] Auto Link failed: ground truth polyline missing');
       this.syncStepUi();
       return;
     }
 
     this.userBorderLinks.clear();
-    this.displayLinkChords = result.displayLinkChords?.map(([from, to]) => [from, to]) ?? [
-      ...result.links.entries(),
-    ];
-    for (const [fromNode, toNode] of result.links) {
+    this.displayLinkChords = reference.displayLinkChords.map(([from, to]) => [from, to]);
+    for (const [fromNode, toNode] of reference.links) {
       this.userBorderLinks.set(fromNode, toNode);
     }
-    this.referenceTourStepIndices = result.tourStepIndices ?? null;
-    this.autoLinkMode = result.mode ?? null;
+    this.referenceTourStepIndices = [...reference.tourStepIndices];
+    this.autoLinkMode = 'abc1-reference';
     this.rebuildCachedTour();
 
     if (!this.linked) {
       this.steps = buildLinkedSimSteps(this.geometrySteps);
       this.linked = true;
     }
-    this.currentStep = 0;
+    this.setTourProgress(0);
     if (this.importRoot) applySandboxVisibleStyle(this.importRoot);
+    this.updateTourDirectionButton();
     this.syncStepUi();
     this.focusTextPanel();
     this.repaintSandboxCanvas();
@@ -824,6 +826,37 @@ export class VectorLinkerSandboxShell {
     if (!(linkBtn instanceof HTMLButtonElement)) return;
     linkBtn.disabled = this.geometrySteps.length === 0;
     linkBtn.textContent = this.linked ? 'Linked ✓' : 'Link';
+  }
+
+  private getAbc1GroundTruthSvgText(): string {
+    return this.tourDirection === 'forward'
+      ? abc1ForwardLinkedSvgText
+      : abc1ReverseLinkedSvgText;
+  }
+
+  /** Swap between VL ABC1-forward and ABC1-reverse ground truth polylines. */
+  private toggleTourDirection(): void {
+    if (this.autoLinkMode !== 'abc1-reference' || !this.linkerLoad) return;
+    this.tourDirection = this.tourDirection === 'forward' ? 'reverse' : 'forward';
+    this.applyAutoLink();
+  }
+
+  private updateTourDirectionButton(): void {
+    const btn = this.root.querySelector('#vls-tour-direction');
+    if (!(btn instanceof HTMLButtonElement)) return;
+    const ready = this.autoLinkMode === 'abc1-reference';
+    btn.disabled = !ready;
+    if (!ready) {
+      btn.textContent = 'Forward';
+      btn.title = 'Auto first — then switch VL Forward / Reverse tour';
+      return;
+    }
+    const active = this.tourDirection === 'forward' ? 'Forward' : 'Reverse';
+    btn.textContent = `${active} ✓`;
+    btn.title =
+      this.tourDirection === 'forward'
+        ? 'VL ABC1-forward ground truth — click for Reverse'
+        : 'VL ABC1-reverse ground truth — click for Forward';
   }
 
   private renderXmlPanel(): void {
@@ -868,7 +901,7 @@ export class VectorLinkerSandboxShell {
     const lineSteps = this.steps.filter((step) => step.lineNumber === lineNumber);
     if (lineSteps.length === 0) {
       const fallback = this.steps.findIndex((step) => step.lineNumber >= lineNumber);
-      if (fallback >= 0) this.setStep(fallback);
+      if (fallback >= 0) this.setStepFromGeometryIndex(fallback);
       return;
     }
 
@@ -883,12 +916,12 @@ export class VectorLinkerSandboxShell {
         for (const step of lineSteps) {
           if (step.column <= offset + 1) best = step;
         }
-        this.setStep(best.index);
+        this.setStepFromGeometryIndex(best.index);
         return;
       }
     }
 
-    this.setStep(lineSteps[0].index);
+    this.setStepFromGeometryIndex(lineSteps[0].index);
   }
 
   private moveCurrentLine(delta: number): void {
@@ -914,7 +947,12 @@ export class VectorLinkerSandboxShell {
   }
 
   private rebuildCachedTour(): void {
-    this.cachedTourStepIndices = this.buildSimTourStepIndices();
+    if (this.referenceTourStepIndices?.length) {
+      // ABC1-linked.svg polyline — sim follows this sequence exactly (no rewrite).
+      this.cachedTourStepIndices = [...this.referenceTourStepIndices];
+    } else {
+      this.cachedTourStepIndices = this.buildSimTourStepIndices();
+    }
     this.tourProgressIndex = 0;
   }
 
@@ -953,6 +991,20 @@ export class VectorLinkerSandboxShell {
       if (tour[i] === this.currentStep) lastMatch = i;
     }
     this.tourProgressIndex = lastMatch;
+  }
+
+  /** Map a geometry step index to tour progress when ABC1-linked tour is active. */
+  private setStepFromGeometryIndex(geometryStepIndex: number): void {
+    const tour = this.getTourSteps();
+    if (tour.length) {
+      let bestTourIdx = 0;
+      for (let i = 0; i < tour.length; i += 1) {
+        if (tour[i] === geometryStepIndex) bestTourIdx = i;
+      }
+      this.setTourProgress(bestTourIdx);
+      return;
+    }
+    this.setStep(geometryStepIndex);
   }
 
   private setStep(next: number): void {
@@ -1027,14 +1079,23 @@ export class VectorLinkerSandboxShell {
 
   private syncStepUi(): void {
     const step = this.steps[this.currentStep];
+    const tour = this.getTourSteps();
     const readout = this.root.querySelector('#vls-step-readout');
     if (readout instanceof HTMLElement) {
       const mode = this.noLinkApplied ? 'NoLink' : 'raw';
       const feedLabel = this.playing ? ` · F${SANDBOX_SIM_FEED_MM_MIN}` : '';
+      const tourLabel =
+        tour.length > 0
+          ? `Tour ${this.tourProgressIndex + 1}/${tour.length} · node ${this.currentStep}`
+          : '';
       readout.textContent = step
         ? step.source === 'start'
-          ? `Step ${step.index + 1}/${this.steps.length}${feedLabel} · G90 · START · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)}`
-          : `Step ${step.index + 1}/${this.steps.length}${feedLabel} · ${mode} · ${step.source} · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)} · line ${step.lineNumber}`
+          ? tour.length > 0
+            ? `${tourLabel}${feedLabel} · G90 · START · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)}`
+            : `Step ${step.index + 1}/${this.steps.length}${feedLabel} · G90 · START · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)}`
+          : tour.length > 0
+            ? `${tourLabel}${feedLabel} · ${mode} · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)} · line ${step.lineNumber}`
+            : `Step ${step.index + 1}/${this.steps.length}${feedLabel} · ${mode} · ${step.source} · X${step.point.x.toFixed(3)} Y${step.point.y.toFixed(3)} · line ${step.lineNumber}`
         : this.lines.length > 0
           ? `No SVG points parsed · ${mode}`
           : 'No SVG loaded';
@@ -1060,7 +1121,7 @@ export class VectorLinkerSandboxShell {
           : '';
       const autoMode =
         this.autoLinkMode === 'abc1-reference'
-          ? ' · VL ref tour'
+          ? ` · VL ${this.tourDirection}`
           : this.autoLinkMode === 'nnoe-greedy'
             ? ' · NNOE'
             : '';
@@ -1070,6 +1131,7 @@ export class VectorLinkerSandboxShell {
     }
 
     this.updateLinkButton();
+    this.updateTourDirectionButton();
 
     this.root.querySelectorAll('.vls-code-line.is-current').forEach((el) => {
       el.classList.remove('is-current');
