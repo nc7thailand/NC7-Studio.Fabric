@@ -76,6 +76,9 @@ const SANDBOX_NEAREST_START_DOT_FILL = '#f59e0b';
 const SANDBOX_NEAREST_START_DOT_STROKE = '#92400e';
 const SANDBOX_USER_LINK_STROKE = '#ef4444';
 const SANDBOX_USER_LINK_STROKE_WIDTH = 4;
+/** Continuous “marker on blackboard” trail for wire path already traveled. */
+const SANDBOX_PASSED_TRAIL_STROKE = 'rgba(255, 255, 255, 0.92)';
+const SANDBOX_PASSED_TRAIL_WIDTH = 5;
 const SANDBOX_BED_POINT_EPS_MM = 0.05;
 /** Steady G1 feed for sandbox auto-play (mm/min). */
 const SANDBOX_SIM_FEED_MM_MIN = 5000;
@@ -431,11 +434,17 @@ export class VectorLinkerSandboxShell {
   /** Reference / auto tour link chords for overlay (supports multiple per from-node). */
   private displayLinkChords: Array<[number, number]> = [];
   private referenceTourStepIndices: number[] | null = null;
+  /** Cached sim tour (step indices) for play, trail, and tour stepping. */
+  private cachedTourStepIndices: number[] = [];
+  /** Index into cachedTourStepIndices — how far the wire has traveled. */
+  private tourProgressIndex = 0;
   private autoLinkMode: 'abc1-reference' | 'nnoe-greedy' | null = null;
   private lines: SvgXmlLine[] = [];
   private steps: SandboxStep[] = [];
   private currentStep = 0;
   private playing = false;
+  /** Hide orange/green/red node markers while sim playback is active. */
+  private simMarkersHidden = false;
   private linkerSim: LinkerSimulation | null = null;
   private simPlaybackBed: Point | null = null;
   private simTourStepIndices: number[] = [];
@@ -709,6 +718,9 @@ export class VectorLinkerSandboxShell {
     this.userBorderLinks.clear();
     this.displayLinkChords = [];
     this.referenceTourStepIndices = null;
+    this.cachedTourStepIndices = [];
+    this.tourProgressIndex = 0;
+    this.simMarkersHidden = false;
     this.autoLinkMode = null;
     this.lines = splitXmlLines(loaded.panelXml);
     const geometryOnly =
@@ -794,6 +806,7 @@ export class VectorLinkerSandboxShell {
     }
     this.referenceTourStepIndices = result.tourStepIndices ?? null;
     this.autoLinkMode = result.mode ?? null;
+    this.rebuildCachedTour();
 
     if (!this.linked) {
       this.steps = buildLinkedSimSteps(this.geometrySteps);
@@ -887,24 +900,71 @@ export class VectorLinkerSandboxShell {
 
   private handleSimButton(id: SimButtonId): void {
     if (id !== 'play') this.stopPlayback();
-    if (id === 'first') this.setStep(0);
-    else if (id === 'backFast') this.setStep(this.currentStep - 10);
-    else if (id === 'back') this.setStep(this.currentStep - 1);
+    if (id === 'first') this.setTourProgress(0);
+    else if (id === 'backFast') this.setTourProgress(this.tourProgressIndex - 10);
+    else if (id === 'back') this.setTourProgress(this.tourProgressIndex - 1);
     else if (id === 'play') this.togglePlay();
-    else if (id === 'forward') this.setStep(this.currentStep + 1);
-    else if (id === 'forwardFast') this.setStep(this.currentStep + 10);
-    else if (id === 'last') this.setStep(this.steps.length - 1);
+    else if (id === 'forward') this.setTourProgress(this.tourProgressIndex + 1);
+    else if (id === 'forwardFast') this.setTourProgress(this.tourProgressIndex + 10);
+    else if (id === 'last') {
+      const tour = this.getTourSteps();
+      this.setTourProgress(tour.length > 0 ? tour.length - 1 : this.steps.length - 1);
+    }
     this.syncStepUi();
+  }
+
+  private rebuildCachedTour(): void {
+    this.cachedTourStepIndices = this.buildSimTourStepIndices();
+    this.tourProgressIndex = 0;
+  }
+
+  private getTourSteps(): number[] {
+    if (this.cachedTourStepIndices.length) return this.cachedTourStepIndices;
+    if (this.referenceTourStepIndices?.length) return this.referenceTourStepIndices;
+    return [];
+  }
+
+  private setTourProgress(tourIndex: number): void {
+    if (this.playing) this.stopPlayback();
+    const tour = this.getTourSteps();
+    if (tour.length) {
+      this.tourProgressIndex = Math.max(0, Math.min(tour.length - 1, tourIndex));
+      this.currentStep = tour[this.tourProgressIndex] ?? 0;
+      if (this.tourProgressIndex === 0) {
+        this.simMarkersHidden = false;
+      }
+      this.syncStepUi();
+      return;
+    }
+    this.setStep(tourIndex);
+    if (tourIndex === 0) {
+      this.simMarkersHidden = false;
+    }
+  }
+
+  private syncTourProgressFromCurrentStep(): void {
+    const tour = this.getTourSteps();
+    if (!tour.length) {
+      this.tourProgressIndex = this.currentStep;
+      return;
+    }
+    let lastMatch = 0;
+    for (let i = 0; i < tour.length; i += 1) {
+      if (tour[i] === this.currentStep) lastMatch = i;
+    }
+    this.tourProgressIndex = lastMatch;
   }
 
   private setStep(next: number): void {
     if (this.playing) this.stopPlayback();
     if (this.steps.length === 0) {
       this.currentStep = 0;
+      this.tourProgressIndex = 0;
       this.syncStepUi();
       return;
     }
     this.currentStep = Math.max(0, Math.min(this.steps.length - 1, next));
+    this.syncTourProgressFromCurrentStep();
     this.syncStepUi();
   }
 
@@ -917,11 +977,16 @@ export class VectorLinkerSandboxShell {
 
     const fromIndex = 0;
     this.currentStep = fromIndex;
-    this.simTourStepIndices = this.buildSimTourStepIndices();
+    this.tourProgressIndex = 0;
+    this.simTourStepIndices =
+      this.cachedTourStepIndices.length > 0
+        ? this.cachedTourStepIndices
+        : this.buildSimTourStepIndices();
     const moves = this.buildMovesFromTourStepIndices(this.simTourStepIndices);
     if (moves.length < 2) return;
 
     this.playing = true;
+    this.simMarkersHidden = true;
     this.simPlaybackBed = null;
     this.linkerSim = new LinkerSimulation({
       moves,
@@ -930,6 +995,7 @@ export class VectorLinkerSandboxShell {
       onFrame: (pos) => {
         this.simPlaybackBed = this.g90PointToBed(pos.cnc);
         const tourIndex = Math.min(pos.moveIndex, this.simTourStepIndices.length - 1);
+        this.tourProgressIndex = tourIndex;
         this.currentStep = this.simTourStepIndices[tourIndex] ?? fromIndex;
         this.syncStepUi();
       },
@@ -937,6 +1003,8 @@ export class VectorLinkerSandboxShell {
         this.linkerSim = null;
         this.simPlaybackBed = null;
         this.playing = false;
+        this.simMarkersHidden = false;
+        this.tourProgressIndex = 0;
         this.currentStep = fromIndex;
         this.syncStepUi();
       },
@@ -1105,6 +1173,56 @@ export class VectorLinkerSandboxShell {
     if (idx < 0 || !this.importRoot) return null;
     const step = this.geometrySteps[idx];
     return this.mapLinkerSvgPointToBed(step.point.x, step.point.y);
+  }
+
+  /** Step indices from START through current tour progress (for passed trail). */
+  private getTrailStepIndices(): number[] {
+    const tour = this.getTourSteps();
+    if (tour.length) {
+      const end = Math.min(this.tourProgressIndex, tour.length - 1);
+      return tour.slice(0, end + 1);
+    }
+    if (this.steps.length === 0) return [];
+    const end = Math.max(0, Math.min(this.currentStep, this.steps.length - 1));
+    return Array.from({ length: end + 1 }, (_, index) => index);
+  }
+
+  private getTrailBedPoints(): Point[] {
+    const stepIndices = this.getTrailStepIndices();
+    if (stepIndices.length === 0) return [];
+    const points = stepIndices
+      .map((stepIndex) => this.steps[stepIndex])
+      .filter((step): step is SandboxStep => !!step)
+      .map((step) => this.mapStepToBedPoint(step));
+    if (this.playing && this.simPlaybackBed && points.length > 0) {
+      const last = points[points.length - 1];
+      if (!sameBedPointMm(last, this.simPlaybackBed)) {
+        points.push(this.simPlaybackBed);
+      }
+    }
+    return points;
+  }
+
+  /** Continuous white marker trail — wire path already traveled. */
+  private drawPassedWireTrail(ctx: CanvasRenderingContext2D, fabric: Canvas): void {
+    const bedPoints = this.getTrailBedPoints();
+    if (bedPoints.length < 2) return;
+
+    const vpt = fabric.viewportTransform;
+    ctx.save();
+    ctx.strokeStyle = SANDBOX_PASSED_TRAIL_STROKE;
+    ctx.lineWidth = SANDBOX_PASSED_TRAIL_WIDTH;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    const first = vpt ? transformPoint(bedPoints[0], vpt) : bedPoints[0];
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < bedPoints.length; i += 1) {
+      const p = vpt ? transformPoint(bedPoints[i], vpt) : bedPoints[i];
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** Link chords currently shown on canvas (auto tour or manual). */
@@ -1330,49 +1448,54 @@ export class VectorLinkerSandboxShell {
     const fabric = this.canvas?.fabric.canvas;
     if (!fabric) return;
 
+    const showNodeMarkers = !this.simMarkersHidden;
+
     // G90 X0 Y20 — always visible.
     drawLinkerStartPoint(ctx, fabric, SANDBOX_START_POINT);
 
     if (this.steps.length === 0 || !this.importRoot) {
-      this.drawClosedLoopNodes(ctx, fabric);
-      this.drawBorderNodeOrderLabels(ctx, fabric);
-      this.drawStartToNearestPath(ctx, fabric);
-      this.drawNearestStartMarker(ctx, fabric);
+      if (showNodeMarkers) {
+        this.drawClosedLoopNodes(ctx, fabric);
+        this.drawBorderNodeOrderLabels(ctx, fabric);
+        this.drawStartToNearestPath(ctx, fabric);
+        this.drawNearestStartMarker(ctx, fabric);
+      }
       return;
     }
 
     this.drawBorderPathSegments(ctx, fabric);
+    this.drawPassedWireTrail(ctx, fabric);
     this.drawUserBorderLinks(ctx, fabric);
-    this.drawStartToNearestPath(ctx, fabric);
+    if (showNodeMarkers) {
+      this.drawStartToNearestPath(ctx, fabric);
+    }
 
     const vpt = fabric.viewportTransform;
     const loopNodeBedPoints = this.getLoopNodeBedPoints();
     const nearestBed = this.getNearestGeometryBedPoint();
 
-    ctx.save();
-    for (const step of this.steps) {
-      if (step.source === 'start') continue;
-      const bedPoint = this.mapStepToBedPoint(step);
-      if (loopNodeBedPoints.some((loopNode) => sameBedPointMm(bedPoint, loopNode))) continue;
-      if (nearestBed && sameBedPointMm(bedPoint, nearestBed)) continue;
-      const point = vpt ? transformPoint(bedPoint, vpt) : bedPoint;
-      ctx.beginPath();
-      ctx.arc(point.x, point.y, SANDBOX_NODE_DOT_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = SANDBOX_NODE_DOT_FILL;
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = SANDBOX_NODE_DOT_STROKE;
-      ctx.stroke();
+    if (showNodeMarkers) {
+      ctx.save();
+      for (const step of this.steps) {
+        if (step.source === 'start') continue;
+        const bedPoint = this.mapStepToBedPoint(step);
+        if (loopNodeBedPoints.some((loopNode) => sameBedPointMm(bedPoint, loopNode))) continue;
+        if (nearestBed && sameBedPointMm(bedPoint, nearestBed)) continue;
+        const point = vpt ? transformPoint(bedPoint, vpt) : bedPoint;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, SANDBOX_NODE_DOT_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = SANDBOX_NODE_DOT_FILL;
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = SANDBOX_NODE_DOT_STROKE;
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      this.drawClosedLoopNodes(ctx, fabric);
+      this.drawBorderNodeOrderLabels(ctx, fabric);
+      this.drawNearestStartMarker(ctx, fabric);
     }
-    ctx.restore();
-
-    // Green loop entry rings (order numbers on all border nodes below).
-    this.drawClosedLoopNodes(ctx, fabric);
-
-    this.drawBorderNodeOrderLabels(ctx, fabric);
-
-    // Amber dot — nearest wire point to START (first link entry).
-    this.drawNearestStartMarker(ctx, fabric);
 
     const step = this.steps[this.currentStep];
     if (!step) return;
