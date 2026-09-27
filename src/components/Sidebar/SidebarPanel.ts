@@ -33,10 +33,10 @@ export function renderFileSidebar(
     objects.length === 0
       ? `<div class="empty-workspace">
           <p>No objects on the foam bed.</p>
-          <p class="text-sm">Use menu → Open SVG File, or trace from vectorcore.</p>
+          <p class="text-sm">Use menu → Open File… (SVG / DXF), or drop a file on the bed. Trace from vectorcore when available.</p>
         </div>`
       : `<div class="objects-list-section">
-          <h3 class="section-title-sm">SVG Drawings (${objects.length})</h3>
+          <h3 class="section-title-sm">Drawings on bed (${objects.length})</h3>
           <div class="objects-list">
             ${objects
               .map(
@@ -68,12 +68,6 @@ export function renderFileSidebar(
         <div class="file-panel-actions">
           <button type="button" class="tools-action-btn" data-dummy-add-abc>Dummy add ABC</button>
           <button type="button" class="tools-action-btn" data-dummy-add-wedding>Dummy add Wedding</button>
-        </div>
-        <div class="file-panel-actions file-panel-actions--gcode">
-          <span class="section-title-sm">Load G-code</span>
-          <button type="button" class="tools-action-btn" data-load-gcode-file>From file…</button>
-          <button type="button" class="tools-action-btn" data-load-gcode-ref="abc-auto">ABC1 auto (reference)</button>
-          <button type="button" class="tools-action-btn" data-load-gcode-ref="abc-manual">ABC1 manual (reference)</button>
         </div>
         ${objectRows}
       </div>

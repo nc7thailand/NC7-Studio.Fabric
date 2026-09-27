@@ -5,6 +5,8 @@ Legacy Three.js production app: `AG-NC7-FoamArt-Studio` (untouched).
 
 **Cutover rule (BK + JM):** NC7 Studio.Fabric replaces Studio only at **100% feature parity** with legacy.
 
+**Vector Linker:** in-app linker workspace and `/vector-linker-sandbox` were removed; linker lives as an external app. Studio keeps SVG layout, nest, undo, vectorizer, and clipboard.
+
 ---
 
 ## Phase 7 — Cutover prep (current)

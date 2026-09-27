@@ -71,3 +71,5 @@ git pull origin main
 - History: no drag coalescing on every pixel of move
 
 These were accepted for v1 ship-first; polish can follow post-cutover.
+
+**Vector Linker sandbox / in-app Link mode:** removed from this repo (external app). Studio is SVG layout + CAM prep only.

@@ -16,15 +16,18 @@ import {
   centerObjectInPlacementLimits,
   fabricObjectFromSvg,
   loadSvgLayoutAsGroup,
-  loadSandboxSvgAsGroup,
   NC7_TRACED_COLLECTION_KEY,
   prepareLayoutObject,
-  prepareSandboxLayoutObject,
   scaleToMaxMm,
   TRACED_CONTENT_GROUP_ID,
 } from '../svg/svgImport';
-import { scheduleImportedBoundsRefresh } from '../svg/importBoundsSync';
+import {
+  scheduleImportedBoundsRefresh,
+  syncImportedGroupSelectionBounds,
+} from '../svg/importBoundsSync';
 import { exportCncLayoutSvg, getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
+import { loadDxfLayoutAsGroup } from '../cad/dxfImport';
+import { exportCncLayoutDxf } from '../cad/dxfExport';
 import { canvasPalette } from '../devlab/CanvasPalette';
 import {
   globalHistory,
@@ -46,54 +49,6 @@ import {
   type ClipboardHost,
 } from './canvasClipboard';
 import { getObjectCncSize, resizeObjectToCncSize } from './objectSizeResize';
-import { drawLinkerStartPoint, hitTestLinkerStartPoint } from './linkerOverlays';
-import { drawLinkerSimCursor } from './linkerSimOverlay';
-import {
-  drawLinkerGraphOverlay,
-  drawLinkerNodeDots,
-  sceneToG90Probe,
-} from './linkerGraphOverlay';
-import { hitTestCutLoop } from './linkerTourOverlay';
-import { drawGcodePreviewNodeDots, GCODE_PREVIEW_ROLE, isGcodePreviewObject } from './pathNodeDots';
-import {
-  DEFAULT_LINKER_START_POINT,
-  linkerStartFromG90,
-  resolveLinkerStartPointCnc,
-  type LinkerStartPointConfig,
-} from '../linker/linkerStartPoint';
-import { cncAbsoluteToFabricBed, fabricBedToCncAbsolute } from '../canvas/cncCoords';
-import { collectCutLoops } from '../linker/linkerPathExtract';
-import { runAutoLink, buildProgramFromGraph } from '../linker/linkerTourBuild';
-import { upsertLinkerStartNode } from '../linker/linkerNodeGraph';
-import {
-  addLink,
-  buildNodesFromLoops,
-  cloneGraph,
-  hitTestLink,
-  hitTestNode,
-  isFullyLinked,
-  refreshGraphLoops,
-  removeLink,
-  toggleLoopReversed,
-} from '../linker/linkerNodeGraph';
-import { formatLinkerGcode } from '../linker/gcodeExport';
-import { parseGcodeTap } from '../linker/gcodeImport';
-import {
-  GCODE_G90_POINTS_KEY,
-  gcodePointsToSimMoves,
-  readGcodePointsFromPath,
-} from '../linker/gcodePreview';
-import { LinkerSimulation, type LinkerSimPosition } from '../linker/linkerSimulation';
-import {
-  createEmptyGraph,
-  flattenLinkerProgram,
-  type G90Move,
-  type G90Point,
-  type LinkerAutoLinkResult,
-  type LinkerG90Program,
-  type LinkerGraphState,
-  type LinkerProgramBuildResult,
-} from '../linker/linkerTypes';
 
 export interface TransformOverlayDetail {
   visible: boolean;
@@ -124,9 +79,6 @@ export interface FabricCanvasOptions {
   onObjectContextMenu?: (detail: ObjectContextMenuDetail) => void;
   onHistoryChange?: (state: HistoryState) => void;
   onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
-  onLinkerSimStateChange?: (running: boolean) => void;
-  onLinkerStartPointChange?: () => void;
-  onLinkerTourChange?: () => void;
 }
 
 const ZOOM_MIN = 0.05;
@@ -141,9 +93,6 @@ export class FabricCanvas {
   private readonly onObjectContextMenu?: (detail: ObjectContextMenuDetail) => void;
   private readonly onHistoryChange?: (state: HistoryState) => void;
   private readonly onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
-  private readonly onLinkerSimStateChange?: (running: boolean) => void;
-  private readonly onLinkerStartPointChange?: () => void;
-  private readonly onLinkerTourChange?: () => void;
   private bedGroup: Group | null = null;
   private rectCount = 0;
   private resizeObserver: ResizeObserver | null = null;
@@ -165,7 +114,6 @@ export class FabricCanvas {
   private onMountTouchMove: ((e: TouchEvent) => void) | null = null;
   private onMountTouchEnd: ((e: TouchEvent) => void) | null = null;
   private readonly onEndViewportPan = (): void => {
-    this.endLinkerStartDrag();
     this.endViewportDrag();
   };
   private lastPanClientX = 0;
@@ -190,80 +138,9 @@ export class FabricCanvas {
     lockRotation: boolean;
   } | null = null;
   private contextMenuCanvasSelection = true;
-  private linkerModeActive = false;
-  private linkerCanvasSelection = true;
-  private linkerStartPoint: LinkerStartPointConfig = { ...DEFAULT_LINKER_START_POINT };
-  private linkerProgram: LinkerG90Program | null = null;
-  private linkerGraph: LinkerGraphState | null = null;
-  private linkerSelectedLoopId: string | null = null;
-  private linkerSim: LinkerSimulation | null = null;
-  private linkerSimPosition: LinkerSimPosition | null = null;
-  private linkerStartDragging = false;
-  private linkerLinkFromNodeId: string | null = null;
-  private linkerLinkDraftTo: G90Point | null = null;
-  private linkerHoveredNodeId: string | null = null;
-  private linkerHoveredLinkId: string | null = null;
-  private linkerUndoStack: LinkerGraphState[] = [];
-  private linkerRedoStack: LinkerGraphState[] = [];
-  private linkerLockSnapshots = new Map<
-    FabricObject,
-    {
-      selectable: boolean;
-      evented: boolean;
-      hasControls: boolean;
-      lockMovementX: boolean;
-      lockMovementY: boolean;
-      lockScalingX: boolean;
-      lockScalingY: boolean;
-      lockRotation: boolean;
-    }
-  >();
   private readonly onClearLongPress = (): void => {
     this.clearLongPressTimer();
   };
-
-  private readonly onAfterRenderGcodeOverlay = (opt: { ctx: CanvasRenderingContext2D }) => {
-    const mainCtx = this.canvas.getContext();
-    if (!mainCtx || opt.ctx !== mainCtx) return;
-    drawGcodePreviewNodeDots(opt.ctx, this.canvas, this.existingUserObjects());
-    drawLinkerSimCursor(opt.ctx, this.canvas, this.linkerSimPosition);
-  };
-
-  private readonly onAfterRenderLinkerOverlay = (opt: { ctx: CanvasRenderingContext2D }) => {
-    if (!this.linkerModeActive) return;
-    // after:render also fires for the upper contextTop layer — draw linker art once on main canvas only.
-    const mainCtx = this.canvas.getContext();
-    if (!mainCtx || opt.ctx !== mainCtx) return;
-
-    const topCtx = this.canvas.contextTop;
-    if (topCtx) this.canvas.clearContext(topCtx);
-
-    drawGcodePreviewNodeDots(opt.ctx, this.canvas, this.existingUserObjects());
-    drawLinkerNodeDots(opt.ctx, this.canvas, this.linkerGraph, this.linkerHoveredNodeId);
-    drawLinkerGraphOverlay(opt.ctx, this.canvas, this.linkerGraph, this.linkerProgram, {
-      selectedLoopId: this.linkerSelectedLoopId,
-      simRunning: this.isLinkerSimulationRunning(),
-      hoveredLinkId: this.linkerHoveredLinkId,
-      hoveredNodeId: this.linkerHoveredNodeId,
-      linkDraftFromNodeId: this.linkerLinkFromNodeId,
-      linkDraftTo: this.linkerLinkDraftTo,
-    });
-    drawLinkerStartPoint(opt.ctx, this.canvas, this.linkerStartPoint, this.linkerStartDragging);
-    drawLinkerSimCursor(opt.ctx, this.canvas, this.linkerSimPosition);
-  };
-
-  private bindLinkerNodeOverlay(): void {
-    this.canvas.on('after:render', this.onAfterRenderLinkerOverlay);
-  }
-
-  private unbindLinkerNodeOverlay(): void {
-    this.canvas.off('after:render', this.onAfterRenderLinkerOverlay);
-  }
-
-  private repaintCanvasNow(): void {
-    this.canvas.cancelRequestedRender();
-    this.canvas.renderAll();
-  }
 
   private static readonly LONG_PRESS_MS = 450;
 
@@ -279,10 +156,6 @@ export class FabricCanvas {
     this.onObjectContextMenu = options.onObjectContextMenu;
     this.onHistoryChange = options.onHistoryChange;
     this.onTransformOverlay = options.onTransformOverlay;
-    this.onLinkerSimStateChange = options.onLinkerSimStateChange;
-    this.onLinkerStartPointChange = options.onLinkerStartPointChange;
-    this.onLinkerTourChange = options.onLinkerTourChange;
-
     this.canvas = new Canvas(canvasEl, {
       backgroundColor: options.backgroundColor ?? '#0b0f19',
       selection: true,
@@ -306,14 +179,12 @@ export class FabricCanvas {
       };
     }
 
-    this.canvas.on('after:render', this.onAfterRenderGcodeOverlay);
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
     this.manager.subscribe(() => this.onManagerChange());
     this.canvas.on('selection:created', (e) => this.onCanvasSelection(e.selected?.[0]));
     this.canvas.on('selection:updated', (e) => this.onCanvasSelection(e.selected?.[0]));
     this.canvas.on('selection:cleared', () => this.onCanvasSelection(undefined));
     this.canvas.on('mouse:dblclick', (e) => {
-      if (this.linkerModeActive) return;
       const target = e.target;
       if (target && !isBedObject(target)) {
         this.onDoubleClickObject?.();
@@ -468,11 +339,7 @@ export class FabricCanvas {
       this.clampViewportTransform();
       e.preventDefault();
       e.stopPropagation();
-      if (this.linkerModeActive) {
-        this.repaintCanvasNow();
-      } else {
-        this.canvas.requestRenderAll();
-      }
+      this.canvas.requestRenderAll();
     });
   };
 
@@ -597,8 +464,6 @@ export class FabricCanvas {
   private bindObjectContextMenu(): void {
     this.onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      if (this.linkerModeActive && this.tryDeleteLinkerLinkAtEvent(e)) return;
-      if (this.linkerModeActive) return;
       const { target } = this.canvas.findTarget(e);
       if (this.canOpenObjectContextMenu(target)) {
         this.openContextMenu('object', target, e.clientX, e.clientY);
@@ -614,8 +479,6 @@ export class FabricCanvas {
 
       if ('button' in evt && evt.button === 2) {
         evt.preventDefault();
-        if (this.linkerModeActive && this.tryDeleteLinkerLinkAtEvent(evt)) return;
-        if (this.linkerModeActive) return;
         const pt = this.pointerClientXY(evt);
         if (!pt) return;
         if (this.canOpenObjectContextMenu(target)) {
@@ -761,11 +624,7 @@ export class FabricCanvas {
       this.touchLastCenterX = center.x;
       this.touchLastCenterY = center.y;
       this.pinchLastDistance = dist;
-      if (this.linkerModeActive) {
-        this.repaintCanvasNow();
-      } else {
-        this.canvas.requestRenderAll();
-      }
+      this.canvas.requestRenderAll();
       e.preventDefault();
     };
 
@@ -779,11 +638,7 @@ export class FabricCanvas {
       this.canvas.selection = true;
       this.blockMousePanUntil = performance.now() + 500;
       this.ensureBedVisible();
-      if (this.linkerModeActive) {
-        this.repaintCanvasNow();
-      } else {
-        this.canvas.requestRenderAll();
-      }
+      this.canvas.requestRenderAll();
     };
 
     this.mountEl.addEventListener('touchstart', this.onMountTouchStart, { passive: false });
@@ -839,9 +694,6 @@ export class FabricCanvas {
 
   private bindDragPan(): void {
     this.canvas.on('mouse:down', (opt) => {
-      if (this.tryBeginLinkerStartDrag(opt)) return;
-      if (this.tryLinkerGraphPointerDown(opt)) return;
-
       if (opt.target) return;
       if (!this.canStartViewportPan(opt.e)) return;
       const pt = this.pointerClientXY(opt.e);
@@ -856,18 +708,6 @@ export class FabricCanvas {
     });
 
     this.canvas.on('mouse:move', (opt) => {
-      if (this.linkerStartDragging) {
-        this.updateLinkerStartFromPointer(opt.e);
-        return;
-      }
-
-      if (this.linkerModeActive && !this.isLinkerSimulationRunning()) {
-        this.updateLinkerHoverFromPointer(opt.e);
-        if (this.linkerLinkFromNodeId) {
-          this.updateLinkerLinkDraft(opt.e);
-        }
-      }
-
       if (!this.isDraggingViewport) return;
       if (!this.canStartViewportPan(opt.e)) {
         this.endViewportDrag();
@@ -882,21 +722,10 @@ export class FabricCanvas {
       this.lastPanClientX = pt.x;
       this.lastPanClientY = pt.y;
       this.clampViewportTransform();
-      if (this.linkerModeActive) {
-        this.repaintCanvasNow();
-      } else {
-        this.canvas.requestRenderAll();
-      }
+      this.canvas.requestRenderAll();
     });
 
-    this.canvas.on('mouse:up', (opt) => {
-      if (this.linkerStartDragging) {
-        this.endLinkerStartDrag();
-        return;
-      }
-
-      if (this.tryFinishLinkerLink(opt)) return;
-
+    this.canvas.on('mouse:up', () => {
       this.endViewportDrag();
     });
 
@@ -1001,17 +830,30 @@ export class FabricCanvas {
   }
 
   private placeClonedObject(obj: FabricObject, id: string, name: string): SceneObject {
-    obj.set({ sceneId: id, sceneName: name });
+    obj.set({ sceneId: id, sceneName: name, objectCaching: false });
     stripActionControls(obj);
+    this.canvas.add(obj);
+    // Enlivened / cloned SVG groups often have a control box desynced from path content
+    // (same issue as Open SVG — fixed there via scheduleImportedBoundsRefresh).
+    syncImportedGroupSelectionBounds(obj);
     if (this.shouldClamp()) {
       this.clampObjectInMargins(obj);
     }
-    this.canvas.add(obj);
     const scene = { id, name, fabricRef: obj };
     this.manager.addObject(scene);
     this.manager.selectObject(id);
     this.canvas.setActiveObject(obj);
+    obj.setCoords();
     this.canvas.requestRenderAll();
+    scheduleImportedBoundsRefresh(obj, () => {
+      if (this.shouldClamp()) {
+        this.clampObjectInMargins(obj);
+      }
+      this.manager.selectObject(id);
+      this.canvas.setActiveObject(obj);
+      obj.setCoords();
+      this.canvas.requestRenderAll();
+    });
     return scene;
   }
 
@@ -1268,46 +1110,6 @@ export class FabricCanvas {
     if (!target || isBedObject(target)) return;
     if (target.type === 'activeSelection') return;
     stripActionControls(target);
-    if (this.linkerModeActive) {
-      this.lockObjectForLinker(target);
-    }
-  }
-
-  private objectEditSnapshot(obj: FabricObject) {
-    return {
-      selectable: obj.selectable ?? true,
-      evented: obj.evented ?? true,
-      hasControls: obj.hasControls ?? true,
-      lockMovementX: obj.lockMovementX ?? false,
-      lockMovementY: obj.lockMovementY ?? false,
-      lockScalingX: obj.lockScalingX ?? false,
-      lockScalingY: obj.lockScalingY ?? false,
-      lockRotation: obj.lockRotation ?? false,
-    };
-  }
-
-  private lockObjectForLinker(obj: FabricObject): void {
-    if (isBedObject(obj) || this.linkerLockSnapshots.has(obj)) return;
-    this.linkerLockSnapshots.set(obj, this.objectEditSnapshot(obj));
-    obj.set({
-      selectable: false,
-      evented: false,
-      hasControls: false,
-      lockMovementX: true,
-      lockMovementY: true,
-      lockScalingX: true,
-      lockScalingY: true,
-      lockRotation: true,
-    });
-    obj.setCoords();
-  }
-
-  private unlockAllLinkerObjects(): void {
-    for (const [obj, snapshot] of this.linkerLockSnapshots) {
-      obj.set({ ...snapshot });
-      obj.setCoords();
-    }
-    this.linkerLockSnapshots.clear();
   }
 
   private existingUserObjects(): FabricObject[] {
@@ -1357,6 +1159,10 @@ export class FabricCanvas {
     return exportCncLayoutSvg(this.existingUserObjects(), width, height);
   }
 
+  exportDxf(): string {
+    return exportCncLayoutDxf(this.existingUserObjects());
+  }
+
   clearUserWorkspace(): void {
     this.withoutHistory(() => {
       const ids = this.manager.objects.map((o) => o.id);
@@ -1369,13 +1175,15 @@ export class FabricCanvas {
     });
   }
 
-  async openSvgLayout(svgText: string, fileName: string): Promise<string> {
-    const grouped = await loadSvgLayoutAsGroup(svgText, this.workArea);
-
+  private async addLayoutGroup(
+    grouped: Group,
+    fileName: string,
+    ext: 'svg' | 'dxf'
+  ): Promise<string> {
     let newId = '';
     await this.withoutHistoryAsync(async () => {
-      const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
-      const name = `${baseName}.svg`;
+      const baseName = fileName.replace(new RegExp(`\\.${ext}$`, 'i'), '') || 'layout';
+      const name = `${baseName}.${ext}`;
 
       prepareLayoutObject(grouped);
       if (this.shouldClamp()) {
@@ -1398,25 +1206,14 @@ export class FabricCanvas {
     return newId;
   }
 
-  /** Vector-linker sandbox — viewBox mapped to bed mm without per-path CNC normalize drift. */
-  async openSandboxSvgLayout(svgText: string, fileName: string): Promise<string> {
-    const grouped = await loadSandboxSvgAsGroup(svgText, this.workArea);
+  async openSvgLayout(svgText: string, fileName: string): Promise<string> {
+    const grouped = await loadSvgLayoutAsGroup(svgText, this.workArea);
+    return this.addLayoutGroup(grouped, fileName, 'svg');
+  }
 
-    let newId = '';
-    await this.withoutHistoryAsync(async () => {
-      const baseName = fileName.replace(/\.svg$/i, '') || 'layout';
-      const name = `${baseName}.svg`;
-
-      prepareSandboxLayoutObject(grouped);
-      const id = this.manager.newId();
-      newId = id;
-      stripActionControls(grouped);
-      this.canvas.add(grouped);
-      this.manager.addObject({ id, name, fabricRef: grouped });
-      this.canvas.requestRenderAll();
-    });
-    markDocumentChanged();
-    return newId;
+  async openDxfLayout(dxfText: string, fileName: string): Promise<string> {
+    const grouped = loadDxfLayoutAsGroup(dxfText);
+    return this.addLayoutGroup(grouped, fileName, 'dxf');
   }
 
   async importSvg(svgText: string, name: string, maxMm?: number): Promise<string> {
@@ -1472,58 +1269,6 @@ export class FabricCanvas {
     this.focusObjectInView(obj);
     this.canvas.requestRenderAll();
     return id;
-  }
-
-  /** Plot G90 `.tap` / G-code on the bed (preview overlay — not linker cut art). */
-  async loadGcodeText(text: string, fileName: string): Promise<string> {
-    const g90 = parseGcodeTap(text);
-    if (g90.length < 2) {
-      throw new Error('No G90 X/Y moves found in file.');
-    }
-
-    const bedPts = g90.map((p) => cncAbsoluteToFabricBed(p.x, p.y));
-    const d = bedPts
-      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`)
-      .join(' ');
-
-    const palette = canvasPalette.getState();
-    const path = new Path(d, {
-      fill: 'transparent',
-      stroke: 'rgba(34, 211, 238, 0.92)',
-      strokeWidth: 2,
-      originX: 'left',
-      originY: 'top',
-      selectable: true,
-      evented: true,
-      cornerColor: palette.handleCorner,
-      cornerStrokeColor: '#1a1a1a',
-      borderColor: '#d1d1d6',
-      transparentCorners: false,
-    });
-    path.set('dataRole', GCODE_PREVIEW_ROLE);
-    path.set(GCODE_G90_POINTS_KEY, g90.map((p) => ({ ...p })));
-    path.set('cncType', 'open');
-    normalizeFabricObjectToCncFrame(path);
-
-    const baseName = fileName.replace(/\.(tap|nc|gcode|gco)$/i, '') || 'gcode';
-    const name = this.uniqueDummyName(`${baseName}.gcode`);
-
-    let newId = '';
-    await this.withoutHistoryAsync(async () => {
-      const id = this.manager.newId();
-      newId = id;
-      stripActionControls(path);
-      this.canvas.add(path);
-      this.manager.addObject({ id, name, fabricRef: path });
-      this.manager.selectObject(id);
-      this.canvas.setActiveObject(path);
-      scheduleImportedBoundsRefresh(path, () => this.canvas.requestRenderAll());
-    });
-
-    markDocumentChanged();
-    this.focusObjectInView(path);
-    this.canvas.requestRenderAll();
-    return newId;
   }
 
   /** Split a traced_content collection into individual path scene objects (Ctrl+Shift+G). */
@@ -1584,7 +1329,7 @@ export class FabricCanvas {
     await this.loadDummyAbcSvg();
   }
 
-  /** Vector Linker ABC Example 1 — Inkscape source (`public/dummy-abc.svg`). */
+  /** Demo ABC artwork (`public/dummy-abc.svg`). */
   async loadDummyAbcSvg(): Promise<void> {
     const res = await fetch('/dummy-abc.svg');
     if (!res.ok) {
@@ -1742,17 +1487,6 @@ export class FabricCanvas {
     });
   }
 
-  /** BK Vector Linker ABC Example 1 — auto-only reference tour. */
-  async loadDummyAbcAutoGcode(): Promise<void> {
-    const res = await fetch('/reference-gcode/ABC1_auto_no_user_edit.tap');
-    if (!res.ok) {
-      throw new Error(`ABC auto G-code not found (HTTP ${res.status})`);
-    }
-    const text = await res.text();
-    await this.loadGcodeText(text, 'ABC1_auto_no_user_edit.tap');
-    console.info('[FabricCanvas] dummy ABC auto G-code loaded');
-  }
-
   async loadStartupDemos(): Promise<void> {
     if (!this.hasBootViewportFit) {
       this.fitBedInView();
@@ -1896,7 +1630,6 @@ export class FabricCanvas {
 
   /** Freeze active object while object context menu is open. */
   setContextMenuLock(locked: boolean): void {
-    if (this.linkerModeActive && locked) return;
     if (!locked) {
       if (this.contextMenuLockTarget && this.contextMenuLockSnapshot) {
         this.contextMenuLockTarget.set({ ...this.contextMenuLockSnapshot });
@@ -1942,479 +1675,6 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   }
 
-  getLinkerStartPoint(): LinkerStartPointConfig {
-    return { ...this.linkerStartPoint };
-  }
-
-  setLinkerStartPoint(config: LinkerStartPointConfig, options?: { notify?: boolean }): void {
-    this.linkerStartPoint = {
-      anchor: config.anchor,
-      xMm: config.xMm,
-      yMm: config.yMm,
-    };
-    if (this.linkerGraph) {
-      upsertLinkerStartNode(this.linkerGraph, resolveLinkerStartPointCnc(this.linkerStartPoint));
-    }
-    this.stopLinkerSimulation();
-    this.rebuildProgramIfTourReady();
-    if (options?.notify !== false) {
-      this.onLinkerStartPointChange?.();
-    }
-    if (this.linkerModeActive) {
-      this.repaintCanvasNow();
-    }
-  }
-
-  private tryBeginLinkerStartDrag(opt: { e: TPointerEvent; target?: FabricObject }): boolean {
-    if (!this.linkerModeActive || this.isLinkerSimulationRunning()) return false;
-    if (opt.target) return false;
-
-    const evt = opt.e;
-    if ('button' in evt && evt.button !== 0) return false;
-
-    const pt = this.pointerClientXY(evt);
-    if (!pt) return false;
-
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    if (!hitTestLinkerStartPoint(this.linkerStartPoint, scene.x, scene.y)) return false;
-
-    this.linkerStartDragging = true;
-    this.canvas.defaultCursor = 'grabbing';
-    this.canvas.selection = false;
-    this.updateLinkerStartFromPointer(evt);
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  private updateLinkerStartFromPointer(evt: TPointerEvent | Event): void {
-    const pt = this.pointerClientXY(evt);
-    if (!pt) return;
-
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    const cnc = fabricBedToCncAbsolute(scene.x, scene.y);
-    const next = linkerStartFromG90(cnc.x, cnc.y, this.workArea);
-    this.setLinkerStartPoint(next, { notify: true });
-  }
-
-  private endLinkerStartDrag(): void {
-    if (!this.linkerStartDragging) return;
-    this.linkerStartDragging = false;
-    this.canvas.defaultCursor = 'default';
-    this.rebuildProgramIfTourReady();
-    this.onLinkerStartPointChange?.();
-    this.repaintCanvasNow();
-  }
-
-  private refreshLinkerGraph(): void {
-    const loops = collectCutLoops(this.existingUserObjects());
-    if (!this.linkerGraph) {
-      this.linkerGraph = createEmptyGraph(loops);
-      this.linkerGraph.nodes = buildNodesFromLoops(loops);
-      return;
-    }
-    this.linkerGraph = refreshGraphLoops(this.linkerGraph, loops);
-  }
-
-  private pushLinkerUndo(): void {
-    if (!this.linkerGraph) return;
-    this.linkerUndoStack.push(cloneGraph(this.linkerGraph));
-    if (this.linkerUndoStack.length > 40) this.linkerUndoStack.shift();
-    this.linkerRedoStack = [];
-  }
-
-  linkerUndo(): boolean {
-    const prev = this.linkerUndoStack.pop();
-    if (!prev || !this.linkerGraph) return false;
-    this.linkerRedoStack.push(cloneGraph(this.linkerGraph));
-    this.linkerGraph = prev;
-    this.rebuildProgramFromGraph();
-    this.notifyLinkerTourChange();
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  linkerRedo(): boolean {
-    const next = this.linkerRedoStack.pop();
-    if (!next || !this.linkerGraph) return false;
-    this.linkerUndoStack.push(cloneGraph(this.linkerGraph));
-    this.linkerGraph = next;
-    this.rebuildProgramFromGraph();
-    this.notifyLinkerTourChange();
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  canLinkerUndo(): boolean {
-    return this.linkerUndoStack.length > 0;
-  }
-
-  canLinkerRedo(): boolean {
-    return this.linkerRedoStack.length > 0;
-  }
-
-  private rebuildProgramFromGraph(mode: 'linked' | 'unlinked' = 'linked'): void {
-    if (!this.linkerGraph) {
-      this.linkerProgram = null;
-      return;
-    }
-    if (this.linkerGraph.links.length === 0 && mode === 'linked') {
-      this.linkerProgram = null;
-      return;
-    }
-    const built = buildProgramFromGraph(this.linkerGraph, this.linkerStartPoint, mode);
-    this.linkerProgram = built.ok ? (built.program ?? null) : null;
-  }
-
-  /** No-op when graph/tour not ready — safe during sandbox mount + START drag. */
-  private rebuildProgramIfTourReady(): void {
-    if (!this.linkerGraph) return;
-    this.rebuildProgramFromGraph();
-  }
-
-  private notifyLinkerTourChange(): void {
-    this.onLinkerTourChange?.();
-  }
-
-  private tryDeleteLinkerLinkAtEvent(evt: TPointerEvent | Event): boolean {
-    if (!this.linkerGraph || this.isLinkerSimulationRunning()) return false;
-    this.refreshLinkerGraph();
-    const pt = this.pointerClientXY(evt);
-    if (!pt) return false;
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    const probe = sceneToG90Probe(scene.x, scene.y);
-    const link = hitTestLink(this.linkerGraph, probe);
-    if (!link) return false;
-    this.pushLinkerUndo();
-    removeLink(this.linkerGraph, link.id);
-    this.rebuildProgramFromGraph();
-    this.notifyLinkerTourChange();
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  private updateLinkerHoverFromPointer(evt: TPointerEvent | Event): void {
-    const pt = this.pointerClientXY(evt);
-    if (!pt || !this.linkerGraph) return;
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    const probe = sceneToG90Probe(scene.x, scene.y);
-    const node = hitTestNode(this.linkerGraph, probe);
-    const link = node ? null : hitTestLink(this.linkerGraph, probe);
-    const nodeId = node?.id ?? null;
-    const linkId = link?.id ?? null;
-    if (nodeId !== this.linkerHoveredNodeId || linkId !== this.linkerHoveredLinkId) {
-      this.linkerHoveredNodeId = nodeId;
-      this.linkerHoveredLinkId = linkId;
-      this.repaintCanvasNow();
-    }
-  }
-
-  private updateLinkerLinkDraft(evt: TPointerEvent | Event): void {
-    const pt = this.pointerClientXY(evt);
-    if (!pt) return;
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    this.linkerLinkDraftTo = sceneToG90Probe(scene.x, scene.y);
-    this.repaintCanvasNow();
-  }
-
-  private tryLinkerGraphPointerDown(opt: { e: TPointerEvent; target?: FabricObject }): boolean {
-    if (!this.linkerModeActive || this.isLinkerSimulationRunning() || this.linkerStartDragging) {
-      return false;
-    }
-    if (opt.target) return false;
-
-    const evt = opt.e;
-
-    this.refreshLinkerGraph();
-    if (!this.linkerGraph || this.linkerGraph.loops.length === 0) return false;
-
-    const pt = this.pointerClientXY(evt);
-    if (!pt) return false;
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    const probe = sceneToG90Probe(scene.x, scene.y);
-
-    if ('button' in evt && evt.button === 2) {
-      return this.tryDeleteLinkerLinkAtEvent(evt);
-    }
-
-    if ('button' in evt && evt.button !== 0) return false;
-
-    const node = hitTestNode(this.linkerGraph, probe);
-    if (node) {
-      this.linkerLinkFromNodeId = node.id;
-      this.linkerLinkDraftTo = probe;
-      this.repaintCanvasNow();
-      return true;
-    }
-
-    const hit = hitTestCutLoop(
-      {
-        loops: this.linkerGraph.loops,
-        order: this.linkerGraph.tourLoopIds,
-        reversed: this.linkerGraph.reversed,
-      },
-      scene.x,
-      scene.y
-    );
-    if (!hit) {
-      if (this.linkerSelectedLoopId) {
-        this.linkerSelectedLoopId = null;
-        this.notifyLinkerTourChange();
-        this.repaintCanvasNow();
-      }
-      return false;
-    }
-
-    this.linkerSelectedLoopId = hit.id;
-    this.notifyLinkerTourChange();
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  private tryFinishLinkerLink(opt: { e: TPointerEvent }): boolean {
-    if (!this.linkerLinkFromNodeId || !this.linkerGraph) return false;
-
-    const fromId = this.linkerLinkFromNodeId;
-    this.linkerLinkFromNodeId = null;
-    this.linkerLinkDraftTo = null;
-
-    const pt = this.pointerClientXY(opt.e);
-    if (!pt) {
-      this.repaintCanvasNow();
-      return true;
-    }
-    const scene = this.clientToScenePoint(pt.x, pt.y);
-    const probe = sceneToG90Probe(scene.x, scene.y);
-    const toNode = hitTestNode(this.linkerGraph, probe);
-
-    if (toNode && toNode.id !== fromId) {
-      this.pushLinkerUndo();
-      addLink(this.linkerGraph, fromId, toNode.id);
-      this.linkerGraph.tourLoopIds = [];
-      this.rebuildProgramFromGraph();
-      this.notifyLinkerTourChange();
-    }
-
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  runLinkerAutoLink(): LinkerAutoLinkResult {
-    this.refreshLinkerGraph();
-    this.pushLinkerUndo();
-    const result = runAutoLink(
-      this.existingUserObjects(),
-      this.linkerStartPoint,
-      this.linkerGraph
-    );
-    if (result.ok && result.graph) {
-      this.linkerGraph = result.graph;
-      this.linkerProgram = result.program ?? null;
-      this.linkerSelectedLoopId = null;
-      this.notifyLinkerTourChange();
-      this.repaintCanvasNow();
-    } else {
-      this.linkerUndoStack.pop();
-    }
-    return result;
-  }
-
-  reverseSelectedLoop(): boolean {
-    if (!this.linkerSelectedLoopId || !this.linkerGraph) return false;
-    const linked = this.linkerGraph.links.some((l) => {
-      const from = this.linkerGraph!.nodes.find((n) => n.id === l.fromNodeId);
-      const to = this.linkerGraph!.nodes.find((n) => n.id === l.toNodeId);
-      return from?.loopId === this.linkerSelectedLoopId || to?.loopId === this.linkerSelectedLoopId;
-    });
-    if (!linked) return false;
-    this.pushLinkerUndo();
-    toggleLoopReversed(this.linkerGraph, this.linkerSelectedLoopId);
-    this.rebuildProgramFromGraph();
-    this.notifyLinkerTourChange();
-    this.repaintCanvasNow();
-    return true;
-  }
-
-  isLinkerFullyLinked(): boolean {
-    return this.linkerGraph ? isFullyLinked(this.linkerGraph) : false;
-  }
-
-  getLinkerGraph(): LinkerGraphState | null {
-    return this.linkerGraph ? cloneGraph(this.linkerGraph) : null;
-  }
-
-  /** @deprecated Use getLinkerGraph */
-  getLinkerTour() {
-    if (!this.linkerGraph) return null;
-    return {
-      loops: this.linkerGraph.loops.map((l) => ({ ...l, points: [...l.points], centroid: { ...l.centroid } })),
-      order: [...this.linkerGraph.tourLoopIds],
-      reversed: { ...this.linkerGraph.reversed },
-    };
-  }
-
-  getLinkerSelectedLoopId(): string | null {
-    return this.linkerSelectedLoopId;
-  }
-
-  rebuildLinkerProgram(): LinkerProgramBuildResult {
-    return this.runLinkerAutoLink();
-  }
-
-  getLinkerProgram(): LinkerG90Program | null {
-    return this.linkerProgram ? { ...this.linkerProgram, start: { ...this.linkerProgram.start }, segments: this.linkerProgram.segments.map((s) => ({ ...s, points: [...s.points] })) } : null;
-  }
-
-  exportLinkerGcodeText(options?: { unlinked?: boolean }): string | null {
-    this.refreshLinkerGraph();
-    if (!this.linkerGraph) return null;
-
-    const mode = options?.unlinked ? 'unlinked' : 'linked';
-    if (mode === 'linked' && !this.linkerProgram) {
-      this.rebuildProgramFromGraph('linked');
-    }
-    if (mode === 'unlinked') {
-      this.rebuildProgramFromGraph('unlinked');
-    }
-    if (!this.linkerProgram) return null;
-
-    const { feedRate, unit, dwellTime } = this.workArea;
-    return formatLinkerGcode(this.linkerProgram, { feedRate, unit, dwellSeconds: dwellTime });
-  }
-
-  isLinkerSimulationRunning(): boolean {
-    return this.linkerSim?.running ?? false;
-  }
-
-  hasGcodePreviewTour(): boolean {
-    return this.getGcodePreviewMoves() != null;
-  }
-
-  canRunBedSimulation(): boolean {
-    return this.buildBedSimulationMoves().length >= 2;
-  }
-
-  private getGcodePreviewPath(): Path | null {
-    for (const obj of this.existingUserObjects()) {
-      if (isGcodePreviewObject(obj) && obj instanceof Path) return obj;
-    }
-    return null;
-  }
-
-  private getGcodePreviewMoves(): G90Move[] | null {
-    const path = this.getGcodePreviewPath();
-    if (!path) return null;
-    const points = readGcodePointsFromPath(path);
-    if (!points || points.length < 2) return null;
-    return gcodePointsToSimMoves(points);
-  }
-
-  private buildBedSimulationMoves(): G90Move[] {
-    if (this.linkerProgram?.segments.length) {
-      return flattenLinkerProgram(this.linkerProgram);
-    }
-    if (this.linkerModeActive && this.linkerGraph) {
-      const built = buildProgramFromGraph(this.linkerGraph, this.linkerStartPoint, 'linked');
-      if (built.ok && built.program?.segments.length) {
-        this.linkerProgram = built.program;
-        return flattenLinkerProgram(built.program);
-      }
-    }
-    return this.getGcodePreviewMoves() ?? [];
-  }
-
-  toggleLinkerSimulation(speedPercent: number): boolean {
-    if (this.linkerSim?.running) {
-      this.stopLinkerSimulation();
-      return false;
-    }
-
-    const moves = this.buildBedSimulationMoves();
-    if (moves.length < 2) return false;
-
-    this.linkerSim = new LinkerSimulation({
-      moves,
-      feedRate: this.workArea.feedRate,
-      speedPercent,
-      onFrame: (pos) => {
-        this.linkerSimPosition = pos;
-        this.repaintCanvasNow();
-      },
-      onComplete: () => {
-        this.linkerSim = null;
-        this.linkerSimPosition = null;
-        this.notifyLinkerSimRunning(false);
-        this.repaintCanvasNow();
-      },
-    });
-    this.linkerSim.start();
-    this.notifyLinkerSimRunning(true);
-    return true;
-  }
-
-  stopLinkerSimulation(): void {
-    const wasRunning = this.linkerSim?.running ?? false;
-    this.linkerSim?.stop();
-    this.linkerSim = null;
-    this.linkerSimPosition = null;
-    if (wasRunning) {
-      this.onLinkerSimStateChange?.(false);
-    }
-    this.repaintCanvasNow();
-  }
-
-  private notifyLinkerSimRunning(running: boolean): void {
-    this.onLinkerSimStateChange?.(running);
-  }
-
-  /** Linker workspace: lock all bed objects — no move/scale/rotate/select. */
-  setLinkerMode(active: boolean): void {
-    if (active === this.linkerModeActive) return;
-
-    if (!active) {
-      this.linkerModeActive = false;
-      this.endLinkerStartDrag();
-      this.stopLinkerSimulation();
-      this.linkerProgram = null;
-      this.linkerGraph = null;
-      this.linkerSelectedLoopId = null;
-      this.linkerLinkFromNodeId = null;
-      this.linkerLinkDraftTo = null;
-      this.linkerUndoStack = [];
-      this.linkerRedoStack = [];
-      this.unbindLinkerNodeOverlay();
-      if (this.canvas.contextTop) this.canvas.clearContext(this.canvas.contextTop);
-      this.unlockAllLinkerObjects();
-      this.canvas.selection = this.linkerCanvasSelection;
-      this.canvas.skipTargetFind = false;
-      this.repaintCanvasNow();
-      return;
-    }
-
-    this.setContextMenuLock(false);
-    this.linkerCanvasSelection = this.canvas.selection ?? true;
-    this.canvas.discardActiveObject();
-    this.manager.selectObject(null);
-
-    for (const scene of this.manager.objects) {
-      this.lockObjectForLinker(scene.fabricRef);
-    }
-
-    this.canvas.selection = false;
-    this.canvas.skipTargetFind = true;
-    this.linkerModeActive = true;
-    this.linkerStartPoint = { ...DEFAULT_LINKER_START_POINT };
-    this.linkerProgram = null;
-    const loops = collectCutLoops(this.existingUserObjects());
-    this.linkerGraph = createEmptyGraph(loops);
-    this.linkerGraph.nodes = buildNodesFromLoops(loops);
-    this.linkerSelectedLoopId = null;
-    this.linkerUndoStack = [];
-    this.linkerRedoStack = [];
-    this.stopLinkerSimulation();
-    this.bindLinkerNodeOverlay();
-    this.repaintCanvasNow();
-  }
-
   getActiveObjectName(): string | null {
     const active = this.canvas.getActiveObject();
     if (active && !isBedObject(active)) {
@@ -2441,8 +1701,6 @@ export class FabricCanvas {
   }
 
   dispose(): void {
-    this.unbindLinkerNodeOverlay();
-    this.setLinkerMode(false);
     this.setContextMenuLock(false);
     this.clearLongPressTimer();
     if (this.onContextMenu) {

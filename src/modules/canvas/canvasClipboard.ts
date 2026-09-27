@@ -7,7 +7,8 @@ import {
   pasteName,
   serializeFabricClone,
 } from './fabricObjectClone';
-import { getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
+import { getCncBoundingRect } from '../svg/pathCncGeometry';
+import { syncImportedGroupSelectionBounds } from '../svg/importBoundsSync';
 
 export const DUPLICATE_OFFSET_MM = 10;
 
@@ -72,15 +73,17 @@ export async function pasteFromClipboard(
   pasteGeneration += 1;
   const name = pasteName(clipboard.name, pasteGeneration);
 
+  // Align group control box to path content before applying paste placement.
+  syncImportedGroupSelectionBounds(obj);
+
   if (options?.atScene) {
-    normalizeFabricObjectToCncFrame(obj);
-    obj.setCoords();
     const bounds = getCncBoundingRect(obj);
     obj.set({
       left: parseFloat((options.atScene.x - bounds.width / 2).toFixed(2)),
       top: parseFloat((options.atScene.y - bounds.height / 2).toFixed(2)),
+      originX: 'left',
+      originY: 'top',
     });
-    normalizeFabricObjectToCncFrame(obj);
     obj.setCoords();
   } else {
     const step = host.lab.isEnabled('F-06') ? pasteGeneration : 1;
@@ -88,7 +91,10 @@ export async function pasteFromClipboard(
     obj.set({
       left: parseFloat((clipboard.originLeft + offset).toFixed(2)),
       top: parseFloat((clipboard.originTop + offset).toFixed(2)),
+      originX: 'left',
+      originY: 'top',
     });
+    obj.setCoords();
   }
 
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;

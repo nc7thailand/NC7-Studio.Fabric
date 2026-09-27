@@ -6,16 +6,17 @@ import {
   downloadSvgFile,
   SVG_LAYOUT_EXPORT_FILENAME,
 } from '../../modules/svg/svgImport';
+import {
+  detectLayoutImportFormat,
+  downloadTextFile,
+  DWG_EXPORT_MESSAGE,
+  DWG_IMPORT_MESSAGE,
+  exportFileName,
+  LAYOUT_EXPORT_DEFAULT,
+  type LayoutExportFormat,
+} from '../../modules/cad/fileFormats';
 import type { HistoryState } from '../../modules/history/GlobalHistoryStack';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
-import type { LinkerStartPointConfig } from '../../modules/linker/linkerStartPoint';
-import type {
-  LinkerAutoLinkResult,
-  LinkerG90Program,
-  LinkerGraphState,
-  LinkerProgramBuildResult,
-  LinkerTour,
-} from '../../modules/linker/linkerTypes';
 
 export interface CanvasViewportHandle {
   manager: WorkAreaManager;
@@ -24,14 +25,14 @@ export interface CanvasViewportHandle {
   importSvgText: (svgText: string, name: string) => Promise<string | null>;
   importVectorizerSvg: (svgText: string, name: string) => Promise<string | null>;
   exportSvg: () => string;
+  exportDxf: () => string;
   saveSvgDownload: (filename?: string) => void;
+  saveExportDownload: (format?: LayoutExportFormat, filename?: string) => void;
   openSvgLayoutFile: (file: File) => Promise<void>;
-  importSandboxSvgText: (svgText: string, name: string) => Promise<void>;
+  openLayoutFile: (file: File) => Promise<void>;
   loadDemoSvg: () => Promise<void>;
   loadDummyAbcSvg: () => Promise<void>;
-  loadDummyAbcAutoGcode: () => Promise<void>;
   loadDummyWeddingSvg: () => Promise<void>;
-  loadGcodeText: (text: string, fileName: string) => Promise<string>;
   addRectangle: () => void;
   removeObject: (id: string) => void;
   selectObject: (id: string | null) => void;
@@ -55,28 +56,8 @@ export interface CanvasViewportHandle {
   runAutoNesting: (gap: number) => { ok: boolean; reason?: string; placed?: number };
   resetView: () => void;
   setContextMenuLock: (locked: boolean) => void;
-  setLinkerMode: (active: boolean) => void;
-  getLinkerStartPoint: () => LinkerStartPointConfig;
-  setLinkerStartPoint: (config: LinkerStartPointConfig) => void;
-  rebuildLinkerProgram: () => LinkerProgramBuildResult;
-  runLinkerAutoLink: () => LinkerAutoLinkResult;
-  reverseSelectedLoop: () => boolean;
-  getLinkerGraph: () => LinkerGraphState | null;
-  getLinkerTour: () => LinkerTour | null;
-  getLinkerSelectedLoopId: () => string | null;
-  getLinkerProgram: () => LinkerG90Program | null;
-  exportLinkerGcodeText: (options?: { unlinked?: boolean }) => string | null;
-  isLinkerFullyLinked: () => boolean;
-  linkerUndo: () => boolean;
-  linkerRedo: () => boolean;
-  canLinkerUndo: () => boolean;
-  canLinkerRedo: () => boolean;
-  toggleLinkerSimulation: (speedPercent: number) => boolean;
-  stopLinkerSimulation: () => void;
-  isLinkerSimulationRunning: () => boolean;
-  hasGcodePreviewTour: () => boolean;
-  canRunBedSimulation: () => boolean;
   applyWorkAreaConfig: (state: WorkAreaConfigState) => void;
+  ungroupTracedCollection: () => Promise<boolean>;
   onSceneChange: (cb: () => void) => void;
   onHistoryChange: (cb: (state: HistoryState) => void) => void;
   onTransformOverlay: (cb: (detail: TransformOverlayDetail | null) => void) => void;
@@ -90,9 +71,6 @@ export function mountCanvasViewport(
     onDoubleClickObject?: () => void;
     onObjectContextMenu?: (detail: ObjectContextMenuDetail) => void;
     onTransformOverlay?: (detail: TransformOverlayDetail | null) => void;
-    onLinkerSimStateChange?: (running: boolean) => void;
-    onLinkerStartPointChange?: () => void;
-    onLinkerTourChange?: () => void;
   }
 ): CanvasViewportHandle {
   const manager = workAreaManager;
@@ -108,9 +86,6 @@ export function mountCanvasViewport(
     onObjectContextMenu: options?.onObjectContextMenu,
     onHistoryChange: (state) => historyCallback?.(state),
     onTransformOverlay: (detail) => transformOverlayCallback?.(detail),
-    onLinkerSimStateChange: options?.onLinkerSimStateChange,
-    onLinkerStartPointChange: options?.onLinkerStartPointChange,
-    onLinkerTourChange: options?.onLinkerTourChange,
   });
 
   workAreaConfig.subscribe((state) => {
@@ -140,23 +115,49 @@ export function mountCanvasViewport(
     importSvgText: (svgText, name) => fabric.importSvg(svgText, name),
     importVectorizerSvg: (svgText, name) => fabric.importVectorizerSvg(svgText, name),
     exportSvg: () => fabric.exportSvg(),
+    exportDxf: () => fabric.exportDxf(),
     saveSvgDownload: (filename = SVG_LAYOUT_EXPORT_FILENAME) => {
       downloadSvgFile(fabric.exportSvg(), filename);
+    },
+    saveExportDownload: (format = LAYOUT_EXPORT_DEFAULT, filename) => {
+      const resolved = format === 'dwg' ? 'dxf' : format;
+      if (format === 'dwg') {
+        window.alert(DWG_EXPORT_MESSAGE);
+      }
+      const name = filename ?? exportFileName(format);
+      if (resolved === 'svg') {
+        downloadSvgFile(fabric.exportSvg(), name.endsWith('.svg') ? name : `${name}.svg`);
+        return;
+      }
+      downloadTextFile(
+        fabric.exportDxf(),
+        name.endsWith('.dxf') ? name : `${name}.dxf`,
+        'application/dxf'
+      );
     },
     openSvgLayoutFile: async (file: File) => {
       const text = await file.text();
       await fabric.openSvgLayout(text, file.name);
-      return null;
     },
-    importSandboxSvgText: async (svgText, name) => {
-      await fabric.openSandboxSvgLayout(svgText, name);
-      return null;
+    openLayoutFile: async (file: File) => {
+      const kind = detectLayoutImportFormat(file);
+      if (kind === 'dwg') {
+        window.alert(DWG_IMPORT_MESSAGE);
+        return;
+      }
+      if (kind === 'unknown') {
+        throw new Error(`Unsupported file type: ${file.name}`);
+      }
+      const text = await file.text();
+      if (kind === 'dxf') {
+        await fabric.openDxfLayout(text, file.name);
+        return;
+      }
+      await fabric.openSvgLayout(text, file.name);
     },
     loadDemoSvg: () => fabric.loadDemoSvg(),
     loadDummyAbcSvg: () => fabric.loadDummyAbcSvg(),
-    loadDummyAbcAutoGcode: () => fabric.loadDummyAbcAutoGcode(),
     loadDummyWeddingSvg: () => fabric.loadDummyWeddingSvg(),
-    loadGcodeText: (text, fileName) => fabric.loadGcodeText(text, fileName),
     addRectangle: () => fabric.addRectangle(),
     removeObject: (id) => fabric.removeSceneObject(id),
     selectObject: (id) => manager.selectObject(id),
@@ -181,28 +182,8 @@ export function mountCanvasViewport(
     runAutoNesting: (gap) => fabric.runAutoNesting(gap),
     resetView: () => fabric.resetView(),
     setContextMenuLock: (locked) => fabric.setContextMenuLock(locked),
-    setLinkerMode: (active) => fabric.setLinkerMode(active),
-    getLinkerStartPoint: () => fabric.getLinkerStartPoint(),
-    setLinkerStartPoint: (config) => fabric.setLinkerStartPoint(config),
-    rebuildLinkerProgram: () => fabric.rebuildLinkerProgram(),
-    runLinkerAutoLink: () => fabric.runLinkerAutoLink(),
-    reverseSelectedLoop: () => fabric.reverseSelectedLoop(),
-    getLinkerGraph: () => fabric.getLinkerGraph(),
-    getLinkerTour: () => fabric.getLinkerTour(),
-    getLinkerSelectedLoopId: () => fabric.getLinkerSelectedLoopId(),
-    getLinkerProgram: () => fabric.getLinkerProgram(),
-    exportLinkerGcodeText: (options) => fabric.exportLinkerGcodeText(options),
-    isLinkerFullyLinked: () => fabric.isLinkerFullyLinked(),
-    linkerUndo: () => fabric.linkerUndo(),
-    linkerRedo: () => fabric.linkerRedo(),
-    canLinkerUndo: () => fabric.canLinkerUndo(),
-    canLinkerRedo: () => fabric.canLinkerRedo(),
-    toggleLinkerSimulation: (speedPercent) => fabric.toggleLinkerSimulation(speedPercent),
-    stopLinkerSimulation: () => fabric.stopLinkerSimulation(),
-    isLinkerSimulationRunning: () => fabric.isLinkerSimulationRunning(),
-    hasGcodePreviewTour: () => fabric.hasGcodePreviewTour(),
-    canRunBedSimulation: () => fabric.canRunBedSimulation(),
     applyWorkAreaConfig: (state) => fabric.applyWorkAreaConfig(state),
+    ungroupTracedCollection: () => fabric.ungroupTracedCollection(),
     onSceneChange: (cb) => {
       sceneCallbacks.push(cb);
     },

@@ -11,9 +11,6 @@ import {
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
 import type { TransformOverlayDetail, ContextMenuKind } from '../../modules/canvas/FabricCanvas';
-import type { LinkerStartAnchor } from '../../modules/linker/linkerStartPoint';
-import { linkerStartFromPreset, linkerStartAnchorFromX } from '../../modules/linker/linkerStartPoint';
-import { downloadGcodeFile } from '../../modules/linker/gcodeExport';
 import { labOptions } from '../../modules/devlab/LabOptions';
 import {
   clearPendingSvg,
@@ -24,6 +21,11 @@ import {
   type VectorizerExportData,
 } from '../../modules/vectorizer/vectorizerPostMessage';
 import { VECTORIZER_PAUSED } from '../../modules/vectorizer/vectorizerPause';
+import {
+  LAYOUT_EXPORT_DEFAULT,
+  LAYOUT_OPEN_ACCEPT,
+  type LayoutExportFormat,
+} from '../../modules/cad/fileFormats';
 
 export class StudioShell {
   private root: HTMLElement;
@@ -40,8 +42,8 @@ export class StudioShell {
   private contextMenuClient = { x: 0, y: 0 };
   private objectAspectLocked = true;
   private objectPanelFocusSize = false;
-  private linkerMode = false;
-  private linkerStartPanelOpen = false;
+  private exportModalOpen = false;
+  private exportFormat: LayoutExportFormat = LAYOUT_EXPORT_DEFAULT;
   private readonly onDocumentPointerDown = (e: PointerEvent): void => {
     if (!this.objectContextMenuOpen) return;
     const menu = this.root.querySelector('#object-context-menu');
@@ -99,13 +101,6 @@ export class StudioShell {
           <div id="devlab-panel-host">${renderDevLabPanel()}</div>
         </section>
 
-        <section id="Pnl-Linker" class="floating-panel" role="dialog" aria-label="Linker workspace" hidden>
-          <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          <div class="linker-panel-host">
-            <h2 class="linker-panel-title">Linker</h2>
-            <p class="linker-panel-lead">Hot-wire path linker workspace — BK will define this next.</p>
-          </div>
-        </section>
 
         <div class="canvas-wrapper">
           <div class="canvas-container" id="canvas-mount">
@@ -117,7 +112,6 @@ export class StudioShell {
           <div class="canvas-overlay-top">
             <div class="canvas-top-stack">
               <div class="canvas-float-controls" role="toolbar" aria-label="Main actions">
-                <button type="button" id="btn-linker-back" class="floating-menu-btn floating-menu-btn--back" hidden title="Back to canvas" aria-label="Back to canvas">&lt;&lt;</button>
                 <div class="floating-menu-anchor">
                   <button type="button" id="btn-nc7-menu" class="floating-menu-btn" title="NC7 menu" aria-label="NC7 menu" aria-haspopup="menu" aria-expanded="false" aria-controls="nc7-menu">NC7</button>
                   <div id="nc7-menu" class="action-menu" role="menu" aria-label="NC7 menu" hidden>
@@ -127,20 +121,8 @@ export class StudioShell {
                         <span class="action-menu-chevron" aria-hidden="true">›</span>
                       </button>
                       <div class="action-menu action-menu--flyout" role="menu" aria-label="File" hidden>
-                        <button type="button" class="action-menu-item" id="btn-open-svg-layout" role="menuitem">Open SVG File</button>
-                        <button type="button" class="action-menu-item" id="btn-save-svg" role="menuitem">Save SVG</button>
-                        <div class="action-menu-submenu" data-menu-submenu>
-                          <button type="button" class="action-menu-item action-menu-item--parent action-menu-item--sub" aria-haspopup="menu" aria-expanded="false" role="menuitem">
-                            Load G-code
-                            <span class="action-menu-chevron" aria-hidden="true">›</span>
-                          </button>
-                          <div class="action-menu action-menu--flyout" role="menu" aria-label="Load G-code" hidden>
-                            <button type="button" class="action-menu-item action-menu-item--sub" id="btn-load-gcode-file" role="menuitem">From file…</button>
-                            <button type="button" class="action-menu-item action-menu-item--sub" data-load-gcode-ref="abc-auto" role="menuitem">ABC1 auto (reference)</button>
-                            <button type="button" class="action-menu-item action-menu-item--sub" data-load-gcode-ref="abc-manual" role="menuitem">ABC1 manual (reference)</button>
-                          </div>
-                        </div>
-                        <button type="button" class="action-menu-item" id="btn-export-gcode" role="menuitem" hidden>Export G-code (.tap)</button>
+                        <button type="button" class="action-menu-item" id="btn-open-layout" role="menuitem">Open File…</button>
+                        <button type="button" class="action-menu-item" id="btn-export-layout" role="menuitem">Export…</button>
                         <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="file" role="menuitem">Files on bed…</button>
                       </div>
                     </div>
@@ -152,7 +134,6 @@ export class StudioShell {
                   </div>
                 </div>
                 <button type="button" id="btn-canvas-menu" class="floating-menu-btn" hidden title="Canvas tools" aria-label="Canvas tools" aria-haspopup="toolbar" aria-expanded="false" aria-controls="canvas-subtoolbar">Canvas</button>
-                <button type="button" id="btn-linker" class="floating-menu-btn floating-menu-btn--link" hidden title="Open linker workspace" aria-label="Link">Link</button>
               </div>
               <div id="canvas-subtoolbar" class="canvas-subtoolbar" role="toolbar" aria-label="Canvas tools" hidden>
                 <div class="canvas-subtoolbar-row">
@@ -171,50 +152,36 @@ export class StudioShell {
                   <button type="button" id="btn-nest-run" class="nesting-run-btn" disabled>Auto Nesting</button>
                 </div>
               </div>
-              <div id="linker-subtoolbar" class="canvas-subtoolbar linker-subtoolbar" role="toolbar" aria-label="Linker tools" hidden>
-                <div class="canvas-subtoolbar-row linker-subtoolbar-row">
-                  <button type="button" id="btn-linker-start" class="canvas-subtoolbar-btn linker-subtoolbar-btn" title="Set cut start point" aria-expanded="false" aria-controls="linker-start-popup">Start point</button>
-                  <button type="button" id="btn-linker-reverse" class="canvas-subtoolbar-btn linker-subtoolbar-btn" title="Reverse cut direction">Reverse</button>
-                  <button type="button" id="btn-linker-auto" class="canvas-subtoolbar-btn linker-subtoolbar-btn" title="Auto-link cut paths">Auto</button>
-                  <button type="button" id="btn-linker-sim" class="canvas-subtoolbar-btn linker-subtoolbar-btn" title="Simulate cut path">Simulation</button>
-                  <span class="canvas-subtoolbar-divider" aria-hidden="true"></span>
-                  <label class="linker-sim-speed" for="linker-sim-speed">
-                    <span class="toolbar-gap-label">Sim speed</span>
-                    <input id="linker-sim-speed" class="linker-sim-speed-slider" type="range" min="100" max="1000" step="10" value="100" aria-label="Simulation speed" aria-valuemin="100" aria-valuemax="1000" aria-valuenow="100" />
-                    <span id="linker-sim-speed-value" class="linker-sim-speed-value" aria-hidden="true">100%</span>
-                  </label>
-                </div>
-                <p id="linker-status" class="linker-status" hidden>Click node → drag → click node to link · Right-click link to delete · Auto for draft tour</p>
-                <div id="linker-start-popup" class="linker-start-popup" role="group" aria-label="Start point settings" hidden>
-                  <span class="toolbar-gap-label linker-start-label">Position</span>
-                  <div class="linker-start-position" role="group" aria-label="Start position anchor">
-                    <button type="button" class="linker-start-pos-btn active" data-linker-start-anchor="top-left">Top left</button>
-                    <button type="button" class="linker-start-pos-btn" data-linker-start-anchor="top-center">Top center</button>
-                    <button type="button" class="linker-start-pos-btn" data-linker-start-anchor="top-right">Top right</button>
-                  </div>
-                  <label class="linker-start-field" for="linker-start-x">
-                    <span class="toolbar-gap-label">X (G90)</span>
-                    <div class="linker-start-input-wrap">
-                      <input id="linker-start-x" class="toolbar-gap-input linker-start-offset-input" type="number" step="0.1" value="0" aria-label="G90 absolute X mm" />
-                      <span class="toolbar-gap-unit">mm</span>
-                    </div>
-                  </label>
-                  <label class="linker-start-field" for="linker-start-y">
-                    <span class="toolbar-gap-label">Y (G90)</span>
-                    <div class="linker-start-input-wrap">
-                      <input id="linker-start-y" class="toolbar-gap-input linker-start-offset-input" type="number" step="0.1" value="20" aria-label="G90 absolute Y mm" />
-                      <span class="toolbar-gap-unit">mm</span>
-                    </div>
-                  </label>
-                  <p class="linker-start-hint">G90 absolute from block top-left (0,0). Y+ up · Y− down. Drag START on canvas or edit here.</p>
-                  <button type="button" id="btn-linker-start-ok" class="linker-start-ok-btn">OK</button>
-                </div>
-              </div>
             </div>
           </div>
 
-          <input type="file" id="svg-layout-open-input" accept=".svg,image/svg+xml" hidden aria-hidden="true" />
-          <input type="file" id="gcode-open-input" accept=".tap,.nc,.gcode,.gco,text/plain" hidden aria-hidden="true" />
+          <input type="file" id="layout-open-input" accept="${LAYOUT_OPEN_ACCEPT}" hidden aria-hidden="true" />
+
+          <div id="export-format-dialog" class="modal-overlay export-format-dialog" hidden aria-hidden="true">
+            <div class="modal-content leave-page-dialog export-format-dialog-content" role="dialog" aria-modal="true" aria-labelledby="export-format-title">
+              <h2 id="export-format-title" class="modal-title">Export layout</h2>
+              <p class="modal-desc">Choose a download format. SVG is the default for NC7 Studio.</p>
+                <fieldset class="export-format-fieldset">
+                <legend class="export-format-legend">Format</legend>
+                <label class="export-format-option">
+                  <input type="radio" name="export-format" value="svg" checked />
+                  <span>.svg <em>(default)</em></span>
+                </label>
+                <label class="export-format-option">
+                  <input type="radio" name="export-format" value="dxf" />
+                  <span>.dxf</span>
+                </label>
+                <label class="export-format-option">
+                  <input type="radio" name="export-format" value="dwg" />
+                  <span>.dwg <em>(falls back to DXF)</em></span>
+                </label>
+              </fieldset>
+              <div class="leave-page-dialog-actions">
+                <button type="button" class="leave-page-btn" id="btn-export-cancel">Cancel</button>
+                <button type="button" class="leave-page-btn leave-page-btn--primary" id="btn-export-confirm">Download</button>
+              </div>
+            </div>
+          </div>
 
           <div id="object-context-menu" class="object-context-menu" role="menu" aria-label="Object actions" hidden>
             <button type="button" class="object-context-menu-item" data-ctx-action="size" role="menuitem">Size</button>
@@ -265,16 +232,6 @@ export class StudioShell {
         this.transformOverlay = detail;
         this.syncTransformHud();
       },
-      onLinkerSimStateChange: () => {
-        this.syncLinkerSimButton();
-      },
-      onLinkerStartPointChange: () => {
-        this.syncLinkerStartPanelFields();
-      },
-      onLinkerTourChange: () => {
-        this.syncLinkerToolbarState();
-        this.updateToolbarUi();
-      },
     });
 
     if (!VECTORIZER_PAUSED) {
@@ -290,12 +247,9 @@ export class StudioShell {
 
     bindDevLabPanel(this.root);
 
-    this.bindLinkerToolbar();
-
     this.canvas.onSceneChange(() => {
       this.updateSelectionUi();
       this.updateToolbarUi();
-      this.syncLinkerModeUi();
       this.refreshFilePanel();
       this.refreshObjectPanel();
     });
@@ -350,65 +304,31 @@ export class StudioShell {
       this.syncToolbarMenusUi();
     });
 
-    const svgLayoutInput = this.root.querySelector('#svg-layout-open-input');
-    this.root.querySelector('#btn-open-svg-layout')?.addEventListener('click', () => {
+    const layoutOpenInput = this.root.querySelector('#layout-open-input');
+    this.root.querySelector('#btn-open-layout')?.addEventListener('click', () => {
       this.closeToolbarMenus();
-      if (svgLayoutInput instanceof HTMLInputElement) {
-        svgLayoutInput.value = '';
-        svgLayoutInput.click();
+      if (layoutOpenInput instanceof HTMLInputElement) {
+        layoutOpenInput.value = '';
+        layoutOpenInput.click();
       }
     });
 
-    svgLayoutInput?.addEventListener('change', (e) => {
+    layoutOpenInput?.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement;
       const file = input.files?.[0];
       input.value = '';
       if (!file) return;
-      void (async () => {
-        try {
-          await this.canvas?.openSvgLayoutFile(file);
-        } catch (err) {
-          console.error('[StudioShell] open SVG layout failed', err);
-        }
-      })();
+      void this.importLayoutFile(file);
     });
 
-    const gcodeInput = this.root.querySelector('#gcode-open-input');
-    this.root.querySelector('#btn-load-gcode-file')?.addEventListener('click', () => {
-      this.closeToolbarMenus();
-      if (gcodeInput instanceof HTMLInputElement) {
-        gcodeInput.value = '';
-        gcodeInput.click();
-      }
-    });
-
-    gcodeInput?.addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      const file = input.files?.[0];
-      input.value = '';
-      if (!file) return;
-      void this.loadGcodeFromFile(file);
-    });
-
-    this.root.querySelectorAll('[data-load-gcode-ref]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const ref = el.getAttribute('data-load-gcode-ref');
-        if (!ref) return;
-        this.closeToolbarMenus();
-        void this.loadGcodeReference(ref);
-      });
-    });
+    this.bindLayoutDropzone(mountEl);
+    this.bindExportDialog();
 
     this.bindActionMenuSubmenus();
 
-    this.root.querySelector('#btn-save-svg')?.addEventListener('click', () => {
+    this.root.querySelector('#btn-export-layout')?.addEventListener('click', () => {
       this.closeToolbarMenus();
-      this.canvas?.saveSvgDownload();
-    });
-
-    this.root.querySelector('#btn-export-gcode')?.addEventListener('click', () => {
-      this.closeToolbarMenus();
-      this.exportLinkerGcode();
+      this.openExportDialog();
     });
 
     this.root.querySelector('#btn-file')?.addEventListener('click', () => {
@@ -428,30 +348,12 @@ export class StudioShell {
 
     this.root.querySelector('#btn-undo')?.addEventListener('click', () => {
       this.closeNc7Menu();
-      if (this.linkerMode) {
-        this.canvas?.linkerUndo();
-        this.syncLinkerToolbarState();
-        return;
-      }
       void this.canvas?.undo();
     });
 
     this.root.querySelector('#btn-redo')?.addEventListener('click', () => {
       this.closeNc7Menu();
-      if (this.linkerMode) {
-        this.canvas?.linkerRedo();
-        this.syncLinkerToolbarState();
-        return;
-      }
       void this.canvas?.redo();
-    });
-
-    this.root.querySelector('#btn-linker')?.addEventListener('click', () => {
-      this.enterLinkerMode();
-    });
-
-    this.root.querySelector('#btn-linker-back')?.addEventListener('click', () => {
-      this.exitLinkerMode();
     });
 
     this.root.querySelector('#btn-nest-toggle')?.addEventListener('click', (e) => {
@@ -488,29 +390,16 @@ export class StudioShell {
         }
       }
 
-      if (!this.nestingPanelOpen && !this.linkerStartPanelOpen) return;
+      if (!this.nestingPanelOpen) return;
       const nestRow = this.root.querySelector('#nesting-popup');
       const nestToggle = this.root.querySelector('#btn-nest-toggle');
       if (
-        this.nestingPanelOpen &&
         nestRow instanceof HTMLElement &&
         nestToggle instanceof HTMLElement &&
         !nestRow.contains(e.target) &&
         !nestToggle.contains(e.target)
       ) {
         this.closeNestingPanel();
-      }
-
-      const startPopup = this.root.querySelector('#linker-start-popup');
-      const startBtn = this.root.querySelector('#btn-linker-start');
-      if (
-        this.linkerStartPanelOpen &&
-        startPopup instanceof HTMLElement &&
-        startBtn instanceof HTMLElement &&
-        !startPopup.contains(e.target) &&
-        !startBtn.contains(e.target)
-      ) {
-        this.closeLinkerStartPanel();
       }
     });
 
@@ -583,12 +472,7 @@ export class StudioShell {
 
       if (e.key === 'z' && !e.shiftKey && labOptions.isEnabled('CORE-UNDO')) {
         e.preventDefault();
-        if (this.linkerMode) {
-          this.canvas?.linkerUndo();
-          this.syncLinkerToolbarState();
-        } else {
-          void this.canvas?.undo();
-        }
+        void this.canvas?.undo();
         return;
       }
       if (
@@ -597,12 +481,7 @@ export class StudioShell {
       ) {
         if (!labOptions.isEnabled('CORE-UNDO') || !labOptions.isEnabled('F-31')) return;
         e.preventDefault();
-        if (this.linkerMode) {
-          this.canvas?.linkerRedo();
-          this.syncLinkerToolbarState();
-        } else {
-          void this.canvas?.redo();
-        }
+        void this.canvas?.redo();
       }
     });
 
@@ -838,337 +717,12 @@ export class StudioShell {
   }
 
   private closePanels(): void {
-    if (this.linkerMode) {
-      this.exitLinkerMode();
-      return;
-    }
     this.openPanel = null;
     this.closeObjectContextMenu();
     this.closeToolbarMenus();
     this.nestingPanelOpen = false;
     this.syncPanelsUi();
     this.syncNestingPanelUi();
-  }
-
-  private enterLinkerMode(): void {
-    this.closeToolbarMenus();
-    this.closeNestingPanel();
-    this.closeObjectContextMenu();
-    this.linkerMode = true;
-    this.canvas?.setLinkerMode(true);
-    this.syncLinkerModeUi();
-    this.syncLinkerStartPanelFields();
-    this.syncLinkerStartPanelUi();
-    this.syncLinkerToolbarState();
-  }
-
-  private exitLinkerMode(): void {
-    this.linkerMode = false;
-    this.linkerStartPanelOpen = false;
-    this.canvas?.stopLinkerSimulation();
-    this.openPanel = null;
-    this.closeObjectContextMenu();
-    this.closeToolbarMenus();
-    this.nestingPanelOpen = false;
-    this.canvas?.setLinkerMode(false);
-    this.syncLinkerModeUi();
-    this.syncLinkerStartPanelUi();
-    this.syncPanelsUi();
-    this.syncNestingPanelUi();
-  }
-
-  private syncLinkerModeUi(): void {
-    const gcodeSimOnly = !this.linkerMode && (this.canvas?.hasGcodePreviewTour() ?? false);
-    const showLinkerBar = this.linkerMode || gcodeSimOnly;
-
-    this.root.querySelector('.canvas-float-controls')?.classList.toggle('linker-mode', this.linkerMode);
-    this.root.querySelector('.canvas-top-stack')?.classList.toggle('linker-mode', this.linkerMode);
-    this.root.querySelector('.canvas-top-stack')?.classList.toggle('gcode-sim-only', gcodeSimOnly);
-
-    const backBtn = this.root.querySelector('#btn-linker-back');
-    if (backBtn instanceof HTMLElement) {
-      backBtn.hidden = !this.linkerMode;
-    }
-
-    const linkBtn = this.root.querySelector('#btn-linker');
-    linkBtn?.classList.toggle('active', this.linkerMode);
-    if (linkBtn instanceof HTMLButtonElement) {
-      linkBtn.setAttribute('aria-expanded', String(this.linkerMode));
-    }
-
-    const linkerSubtoolbar = this.root.querySelector('#linker-subtoolbar');
-    if (linkerSubtoolbar instanceof HTMLElement) {
-      linkerSubtoolbar.hidden = !showLinkerBar;
-      linkerSubtoolbar.classList.toggle('is-open', showLinkerBar);
-      linkerSubtoolbar.classList.toggle('gcode-sim-only', gcodeSimOnly);
-    }
-
-    const linkerOnlyHidden = gcodeSimOnly;
-    for (const sel of ['#btn-linker-start', '#btn-linker-reverse', '#btn-linker-auto', '#linker-status']) {
-      const el = this.root.querySelector(sel);
-      if (el instanceof HTMLElement) el.hidden = linkerOnlyHidden;
-    }
-    if (linkerOnlyHidden) {
-      this.linkerStartPanelOpen = false;
-      this.syncLinkerStartPanelUi();
-    }
-
-    const exportGcodeBtn = this.root.querySelector('#btn-export-gcode');
-    if (exportGcodeBtn instanceof HTMLElement) {
-      exportGcodeBtn.hidden = !this.linkerMode;
-    }
-
-    this.syncLinkerSimButton();
-    this.syncLinkerToolbarState();
-  }
-
-  private syncLinkerToolbarState(): void {
-    const tour = this.canvas?.getLinkerTour();
-    const selected = this.canvas?.getLinkerSelectedLoopId();
-    const canSim = this.canvas?.canRunBedSimulation() ?? false;
-    const loopCount = tour?.loops.length ?? 0;
-    const linkCount = this.canvas?.getLinkerGraph()?.links.length ?? 0;
-    const fullyLinked = this.canvas?.isLinkerFullyLinked() ?? false;
-
-    const reverseBtn = this.root.querySelector('#btn-linker-reverse');
-    if (reverseBtn instanceof HTMLButtonElement) {
-      const canReverse = Boolean(selected && (this.canvas?.getLinkerProgram()?.segments.length ?? 0) > 0);
-      reverseBtn.disabled = !canReverse;
-      reverseBtn.title = canReverse
-        ? 'Reverse cut direction on selected loop'
-        : 'Select a linked loop to reverse direction';
-    }
-
-    const simBtn = this.root.querySelector('#btn-linker-sim');
-    if (simBtn instanceof HTMLButtonElement) {
-      simBtn.disabled = !canSim;
-      simBtn.title = canSim
-        ? 'Run hot-wire along G-code path'
-        : 'Load or link a cut tour to simulate';
-    }
-
-    const status = this.root.querySelector('#linker-status');
-    if (status instanceof HTMLElement) {
-      status.hidden = !this.linkerMode;
-      const linkLabel = fullyLinked ? 'fully linked' : `${linkCount} links · ${loopCount} contours`;
-      if (selected) {
-        status.textContent = `${linkLabel} · selected ${selected.split(':').pop() ?? 'loop'} · click node→node to link · right-click link deletes`;
-      } else {
-        status.textContent = `${linkLabel} · click node→node to link · Auto draft · right-click link deletes`;
-      }
-    }
-  }
-
-  private getLinkerSimSpeedPercent(): number {
-    const el = this.root.querySelector('#linker-sim-speed');
-    if (el instanceof HTMLInputElement) {
-      const n = parseInt(el.value, 10);
-      if (Number.isFinite(n)) return Math.min(1000, Math.max(100, n));
-    }
-    return 100;
-  }
-
-  private runLinkerAuto(): void {
-    if (!this.canvas) return;
-    if (!this.linkerMode) {
-      console.warn('[Linker] Enter Link mode before Auto link.');
-      return;
-    }
-    this.commitLinkerStartPoint();
-    const result = this.canvas.runLinkerAutoLink();
-    if (!result.ok) {
-      console.warn('[Linker] Auto link failed:', result.reason ?? 'unknown');
-      return;
-    }
-    const linkCount = result.graph?.links.length ?? 0;
-    const loopCount = result.graph?.loops.length ?? 0;
-    console.info(`[Linker] Auto link OK — ${linkCount} links · ${loopCount} contours`);
-    this.syncLinkerToolbarState();
-  }
-
-  private toggleLinkerSimulation(): void {
-    if (!this.canvas) return;
-    this.commitLinkerStartPoint();
-    const running = this.canvas.toggleLinkerSimulation(this.getLinkerSimSpeedPercent());
-    this.syncLinkerSimButton();
-    if (running) {
-      console.info('[Linker] G90 simulation started');
-    } else {
-      console.info('[Linker] G90 simulation stopped');
-    }
-  }
-
-  private syncLinkerSimButton(): void {
-    const btn = this.root.querySelector('#btn-linker-sim');
-    const running = this.canvas?.isLinkerSimulationRunning() ?? false;
-    btn?.classList.toggle('active', running);
-    if (btn instanceof HTMLButtonElement) {
-      btn.textContent = running ? 'Stop sim' : 'Simulation';
-      btn.title = running ? 'Stop G90 cut simulation' : 'Simulate G90 cut path';
-    }
-  }
-
-  private exportLinkerGcode(): void {
-    if (!this.canvas) return;
-    if (!this.linkerMode) {
-      console.warn('[Linker] Enter Link mode before exporting G-code.');
-      return;
-    }
-
-    this.commitLinkerStartPoint();
-    const fullyLinked = this.canvas.isLinkerFullyLinked();
-
-    if (!fullyLinked) {
-      const proceed = window.confirm(
-        'Are you sure?\n\nThe drawing contains unconnected objects. Are you sure you want to save?'
-      );
-      if (!proceed) return;
-    } else if (!this.canvas.getLinkerProgram()) {
-      const built = this.canvas.runLinkerAutoLink();
-      if (!built.ok) {
-        console.warn('[Linker] G-code export failed:', built.reason ?? 'no program');
-        return;
-      }
-    }
-
-    const gcode = this.canvas.exportLinkerGcodeText({ unlinked: !fullyLinked });
-    if (!gcode) {
-      console.warn('[Linker] G-code export failed: no program');
-      return;
-    }
-
-    downloadGcodeFile(gcode);
-    console.info('[Linker] G90 G-code exported (.tap)', fullyLinked ? 'linked' : 'unlinked stitch');
-  }
-
-  private bindLinkerToolbar(): void {
-    this.root.querySelector('#btn-linker-start')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.toggleLinkerStartPanel();
-    });
-    this.root.querySelector('#btn-linker-reverse')?.addEventListener('click', () => {
-      if (!this.canvas?.reverseSelectedLoop()) {
-        console.warn('[Linker] Select a linked loop first, then Reverse.');
-      }
-    });
-    this.root.querySelector('#btn-linker-auto')?.addEventListener('click', () => {
-      this.runLinkerAuto();
-    });
-    this.root.querySelector('#btn-linker-sim')?.addEventListener('click', () => {
-      this.toggleLinkerSimulation();
-    });
-
-    const simSpeed = this.root.querySelector('#linker-sim-speed');
-    const simSpeedValue = this.root.querySelector('#linker-sim-speed-value');
-    simSpeed?.addEventListener('input', () => {
-      if (!(simSpeed instanceof HTMLInputElement) || !(simSpeedValue instanceof HTMLElement)) return;
-      const pct = simSpeed.value;
-      simSpeedValue.textContent = `${pct}%`;
-      simSpeed.setAttribute('aria-valuenow', pct);
-      this.syncLinkerSimButton();
-    });
-
-    this.root.querySelectorAll('[data-linker-start-anchor]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const anchor = btn.getAttribute('data-linker-start-anchor') as LinkerStartAnchor | null;
-        if (!anchor) return;
-        const yEl = this.root.querySelector('#linker-start-y');
-        const yMm =
-          yEl instanceof HTMLInputElement && Number.isFinite(parseFloat(yEl.value))
-            ? parseFloat(yEl.value)
-            : 20;
-        const preset = linkerStartFromPreset(anchor, workAreaConfig.getState(), yMm);
-        this.root.querySelectorAll('[data-linker-start-anchor]').forEach((el) => {
-          el.classList.toggle('active', el.getAttribute('data-linker-start-anchor') === anchor);
-        });
-        const xEl = this.root.querySelector('#linker-start-x');
-        if (xEl instanceof HTMLInputElement) xEl.value = String(preset.xMm);
-        if (yEl instanceof HTMLInputElement) yEl.value = String(preset.yMm);
-      });
-    });
-
-    this.root.querySelector('#btn-linker-start-ok')?.addEventListener('click', () => {
-      this.confirmLinkerStartPanel();
-    });
-  }
-
-  private confirmLinkerStartPanel(): void {
-    this.applyLinkerStartFromPanel();
-    this.closeLinkerStartPanel();
-  }
-
-  private toggleLinkerStartPanel(): void {
-    this.linkerStartPanelOpen = !this.linkerStartPanelOpen;
-    if (this.linkerStartPanelOpen) {
-      this.syncLinkerStartPanelFields();
-    }
-    this.syncLinkerStartPanelUi();
-  }
-
-  private closeLinkerStartPanel(): void {
-    this.linkerStartPanelOpen = false;
-    this.syncLinkerStartPanelUi();
-  }
-
-  private syncLinkerStartPanelUi(): void {
-    const popup = this.root.querySelector('#linker-start-popup');
-    const btn = this.root.querySelector('#btn-linker-start');
-    if (popup instanceof HTMLElement) {
-      popup.hidden = !this.linkerStartPanelOpen || !this.linkerMode;
-    }
-    btn?.classList.toggle('active', this.linkerStartPanelOpen);
-    if (btn instanceof HTMLButtonElement) {
-      btn.setAttribute('aria-expanded', String(this.linkerStartPanelOpen));
-    }
-  }
-
-  private syncLinkerStartPanelFields(): void {
-    const cfg = this.canvas?.getLinkerStartPoint();
-    if (!cfg) return;
-
-    this.root.querySelectorAll('[data-linker-start-anchor]').forEach((el) => {
-      const anchor = el.getAttribute('data-linker-start-anchor') as LinkerStartAnchor | null;
-      const matchedAnchor = linkerStartAnchorFromX(cfg.xMm, workAreaConfig.getState());
-      el.classList.toggle('active', anchor != null && anchor === matchedAnchor);
-    });
-
-    const xEl = this.root.querySelector('#linker-start-x');
-    const yEl = this.root.querySelector('#linker-start-y');
-    if (xEl instanceof HTMLInputElement) xEl.value = String(cfg.xMm);
-    if (yEl instanceof HTMLInputElement) yEl.value = String(cfg.yMm);
-  }
-
-  /** Open panel → read X/Y fields; otherwise keep canvas START (e.g. after drag). */
-  private commitLinkerStartPoint(): void {
-    if (this.linkerStartPanelOpen) {
-      this.applyLinkerStartFromPanel();
-    } else {
-      this.syncLinkerStartPanelFields();
-    }
-  }
-
-  private applyLinkerStartFromPanel(): void {
-    const xEl = this.root.querySelector('#linker-start-x');
-    const yEl = this.root.querySelector('#linker-start-y');
-    const current = this.canvas?.getLinkerStartPoint();
-    if (!current) return;
-
-    const parseAbs = (el: Element | null, fallback: number): number => {
-      if (!(el instanceof HTMLInputElement)) return fallback;
-      const n = parseFloat(el.value);
-      return Number.isFinite(n) ? n : fallback;
-    };
-
-    const active = this.root.querySelector('[data-linker-start-anchor].active');
-    const anchor =
-      (active?.getAttribute('data-linker-start-anchor') as LinkerStartAnchor | null) ??
-      current.anchor;
-
-    this.canvas?.setLinkerStartPoint({
-      anchor,
-      xMm: parseAbs(xEl, current.xMm),
-      yMm: parseAbs(yEl, current.yMm),
-    });
   }
 
   private closeNc7Menu(): void {
@@ -1228,7 +782,6 @@ export class StudioShell {
       object: '#Pnl-Object',
       devlab: '#Pnl-DevLab',
       vectorizer: '#Pnl-Vectorizer',
-      linker: '#Pnl-Linker',
     };
 
     if (backdrop instanceof HTMLElement) {
@@ -1252,7 +805,6 @@ export class StudioShell {
     const fileMenuBtn = this.root.querySelector('#btn-nc7-file');
     fileMenuBtn?.classList.toggle('active', fileOpen);
     this.root.querySelector('#btn-tools')?.classList.toggle('active', toolsOpen);
-    this.root.querySelector('#btn-linker')?.classList.toggle('active', this.openPanel === 'linker');
   }
 
   /** One delegated listener — survives file list re-renders. */
@@ -1275,23 +827,6 @@ export class StudioShell {
         void this.canvas?.loadDummyWeddingSvg();
         return;
       }
-      if (target.closest('[data-load-gcode-file]')) {
-        e.preventDefault();
-        const gcodeInput = this.root.querySelector('#gcode-open-input');
-        if (gcodeInput instanceof HTMLInputElement) {
-          gcodeInput.value = '';
-          gcodeInput.click();
-        }
-        return;
-      }
-      const gcodeRefBtn = target.closest('[data-load-gcode-ref]');
-      if (gcodeRefBtn) {
-        e.preventDefault();
-        const ref = gcodeRefBtn.getAttribute('data-load-gcode-ref');
-        if (ref) void this.loadGcodeReference(ref);
-        return;
-      }
-
       const deleteBtn = target.closest('[data-delete-id]');
       if (deleteBtn) {
         e.stopPropagation();
@@ -1327,43 +862,7 @@ export class StudioShell {
     });
   }
 
-  private static readonly GCODE_REF_FILES: Record<string, string> = {
-    'abc-auto': '/reference-gcode/ABC1_auto_no_user_edit.tap',
-    'abc-manual': '/reference-gcode/ABC1_manual_edited.tap',
-  };
-
-  private async loadGcodeFromFile(file: File): Promise<void> {
-    if (!this.canvas) return;
-    try {
-      const text = await file.text();
-      await this.canvas.loadGcodeText(text, file.name);
-      this.refreshFilePanel();
-    } catch (err) {
-      console.error('[StudioShell] load G-code failed', err);
-      const detail = err instanceof Error ? err.message : String(err);
-      window.alert(`Could not load G-code: ${detail}`);
-    }
-  }
-
-  private async loadGcodeReference(refId: string): Promise<void> {
-    if (!this.canvas) return;
-    const url = StudioShell.GCODE_REF_FILES[refId];
-    if (!url) return;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      const fileName = url.split('/').pop() ?? 'reference.tap';
-      await this.canvas.loadGcodeText(text, fileName);
-      this.refreshFilePanel();
-    } catch (err) {
-      console.error('[StudioShell] load G-code reference failed', err);
-      const detail = err instanceof Error ? err.message : String(err);
-      window.alert(`Could not load reference G-code: ${detail}`);
-    }
-  }
-
-  /** Nested NC7 menu flyouts (File → Load G-code → …). */
+  /** Nested NC7 menu flyouts (File → …). */
   private bindActionMenuSubmenus(): void {
     const root = this.root.querySelector('#nc7-menu');
     if (!(root instanceof HTMLElement) || root.dataset.submenusBound === '1') return;
@@ -1440,15 +939,12 @@ export class StudioShell {
     if (!this.canvas) return;
     const history = this.canvas.getHistoryState();
     const objectCount = this.canvas.getObjectCount();
-    const undoEnabled = this.linkerMode
-      ? (this.canvas?.canLinkerUndo() ?? false)
-      : history.canUndo && labOptions.isEnabled('CORE-UNDO');
-    const redoEnabled = this.linkerMode
-      ? (this.canvas?.canLinkerRedo() ?? false)
-      : history.canRedo &&
-        labOptions.isEnabled('CORE-UNDO') &&
-        labOptions.isEnabled('F-32') &&
-        labOptions.isEnabled('F-31');
+    const undoEnabled = history.canUndo && labOptions.isEnabled('CORE-UNDO');
+    const redoEnabled =
+      history.canRedo &&
+      labOptions.isEnabled('CORE-UNDO') &&
+      labOptions.isEnabled('F-32') &&
+      labOptions.isEnabled('F-31');
     const nestFeatureOn = labOptions.isEnabled('CORE-NEST');
     const nestEnabled = objectCount >= 2 && nestFeatureOn;
 
@@ -1456,11 +952,7 @@ export class StudioShell {
     if (undoBtn instanceof HTMLButtonElement) {
       undoBtn.disabled = !undoEnabled;
       undoBtn.classList.toggle('is-disabled', !undoEnabled);
-      const undoTitle = undoEnabled
-        ? this.linkerMode
-          ? 'Undo link edit'
-          : history.label
-        : 'Nothing to undo';
+      const undoTitle = undoEnabled ? history.label : 'Nothing to undo';
       undoBtn.title = undoTitle;
       undoBtn.setAttribute('aria-label', undoTitle);
     }
@@ -1469,11 +961,7 @@ export class StudioShell {
     if (redoBtn instanceof HTMLButtonElement) {
       redoBtn.disabled = !redoEnabled;
       redoBtn.classList.toggle('is-disabled', !redoEnabled);
-      const redoTitle = redoEnabled
-        ? this.linkerMode
-          ? 'Redo link edit'
-          : history.redoLabel
-        : 'Nothing to redo';
+      const redoTitle = redoEnabled ? history.redoLabel : 'Nothing to redo';
       redoBtn.title = redoTitle;
       redoBtn.setAttribute('aria-label', redoTitle);
     }
@@ -1507,13 +995,6 @@ export class StudioShell {
       }
     }
 
-    const linkBtn = this.root.querySelector('#btn-linker');
-    if (linkBtn instanceof HTMLElement) {
-      linkBtn.hidden = !showObjectTools;
-      if (!showObjectTools && (this.openPanel === 'linker' || this.linkerMode)) {
-        this.exitLinkerMode();
-      }
-    }
   }
 
   private getObjectPanelData(): ObjectPanelData | null {
@@ -1708,6 +1189,92 @@ export class StudioShell {
         loopEl.textContent = ` · ${metrics.count} loop${metrics.count === 1 ? '' : 's'}`;
       }
     }
+  }
+
+  private async importLayoutFile(file: File): Promise<void> {
+    try {
+      await this.canvas?.openLayoutFile(file);
+    } catch (err) {
+      console.error('[StudioShell] open layout failed', err);
+      const message = err instanceof Error ? err.message : 'Could not open file';
+      window.alert(message);
+    }
+  }
+
+  private bindLayoutDropzone(mountEl: HTMLElement): void {
+    const isFileDrag = (e: DragEvent): boolean =>
+      Array.from(e.dataTransfer?.types ?? []).includes('Files');
+
+    mountEl.addEventListener('dragenter', (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      mountEl.classList.add('is-file-drop-target');
+    });
+    mountEl.addEventListener('dragover', (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      mountEl.classList.add('is-file-drop-target');
+    });
+    mountEl.addEventListener('dragleave', (e) => {
+      if (e.target !== mountEl && mountEl.contains(e.relatedTarget as Node | null)) return;
+      mountEl.classList.remove('is-file-drop-target');
+    });
+    mountEl.addEventListener('drop', (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      mountEl.classList.remove('is-file-drop-target');
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      void this.importLayoutFile(file);
+    });
+  }
+
+  private bindExportDialog(): void {
+    const dialog = this.root.querySelector('#export-format-dialog');
+    this.root.querySelector('#btn-export-cancel')?.addEventListener('click', () => {
+      this.closeExportDialog();
+    });
+    this.root.querySelector('#btn-export-confirm')?.addEventListener('click', () => {
+      const selected = this.root.querySelector(
+        'input[name="export-format"]:checked'
+      ) as HTMLInputElement | null;
+      const format = (selected?.value as LayoutExportFormat | undefined) ?? LAYOUT_EXPORT_DEFAULT;
+      this.exportFormat = format;
+      this.closeExportDialog();
+      try {
+        this.canvas?.saveExportDownload(format);
+      } catch (err) {
+        console.error('[StudioShell] export failed', err);
+        const message = err instanceof Error ? err.message : 'Export failed';
+        window.alert(message);
+      }
+    });
+    dialog?.addEventListener('click', (e) => {
+      if (e.target === dialog) this.closeExportDialog();
+    });
+  }
+
+  private openExportDialog(): void {
+    const dialog = this.root.querySelector('#export-format-dialog');
+    if (!(dialog instanceof HTMLElement)) return;
+    this.exportFormat = LAYOUT_EXPORT_DEFAULT;
+    const svgRadio = this.root.querySelector(
+      'input[name="export-format"][value="svg"]'
+    ) as HTMLInputElement | null;
+    if (svgRadio) svgRadio.checked = true;
+    dialog.hidden = false;
+    dialog.setAttribute('aria-hidden', 'false');
+    this.exportModalOpen = true;
+  }
+
+  private closeExportDialog(): void {
+    const dialog = this.root.querySelector('#export-format-dialog');
+    if (dialog instanceof HTMLElement) {
+      dialog.hidden = true;
+      dialog.setAttribute('aria-hidden', 'true');
+    }
+    this.exportModalOpen = false;
   }
 
   destroy(): void {

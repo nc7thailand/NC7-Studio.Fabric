@@ -33,3 +33,7 @@ Remote: `git@github.com:nc7thailand/NC7-Studio.Fabric.git`
 ## Nginx split-view (optional)
 
 Port **8088** — AG Mini routes to Studio on 3009 (see infrastructure on legacy repo).
+
+## Vector Linker
+
+In-app `/vector-linker-sandbox` and Studio Link mode are removed. Run linker as a separate app if needed; Fabric Studio is layout-only on port **3010**.

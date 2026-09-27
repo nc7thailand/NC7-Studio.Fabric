@@ -435,6 +435,152 @@ function rectToAbsolutePath(rect: Rect): { d: string; cncType: CncVectorType } {
   return { d: joinPath(commands, digits), cncType: 'closed' };
 }
 
+export type AbsoluteBedSubpath = {
+  points: { x: number; y: number }[];
+  closed: boolean;
+};
+
+function sampleCubic(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  steps = 8
+): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const u = 1 - t;
+    const x =
+      u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x3;
+    const y =
+      u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y3;
+    out.push({ x, y });
+  }
+  return out;
+}
+
+function sampleQuadratic(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  steps = 8
+): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const u = 1 - t;
+    out.push({
+      x: u * u * x0 + 2 * u * t * x1 + t * t * x2,
+      y: u * u * y0 + 2 * u * t * y1 + t * t * y2,
+    });
+  }
+  return out;
+}
+
+/** Flatten Fabric vectors to absolute bed-mm polylines (curves sampled). */
+export function collectAbsoluteBedSubpaths(obj: FabricObject): AbsoluteBedSubpath[] {
+  if (obj instanceof Path) {
+    const absolute = pathCommandsToAbsoluteBed(obj);
+    const subpaths: AbsoluteBedSubpath[] = [];
+    let points: { x: number; y: number }[] = [];
+    let closed = false;
+    let cx = 0;
+    let cy = 0;
+
+    const pushOpen = () => {
+      if (points.length >= 2) subpaths.push({ points, closed: false });
+      points = [];
+      closed = false;
+    };
+
+    for (const cmd of absolute) {
+      const op = String(cmd[0]);
+      if (op === 'M') {
+        pushOpen();
+        cx = toNum(cmd[1]);
+        cy = toNum(cmd[2]);
+        points = [{ x: cx, y: cy }];
+      } else if (op === 'L') {
+        cx = toNum(cmd[1]);
+        cy = toNum(cmd[2]);
+        points.push({ x: cx, y: cy });
+      } else if (op === 'C') {
+        const samples = sampleCubic(
+          cx,
+          cy,
+          toNum(cmd[1]),
+          toNum(cmd[2]),
+          toNum(cmd[3]),
+          toNum(cmd[4]),
+          toNum(cmd[5]),
+          toNum(cmd[6])
+        );
+        points.push(...samples);
+        cx = toNum(cmd[5]);
+        cy = toNum(cmd[6]);
+      } else if (op === 'Q') {
+        const samples = sampleQuadratic(
+          cx,
+          cy,
+          toNum(cmd[1]),
+          toNum(cmd[2]),
+          toNum(cmd[3]),
+          toNum(cmd[4])
+        );
+        points.push(...samples);
+        cx = toNum(cmd[3]);
+        cy = toNum(cmd[4]);
+      } else if (op === 'Z' || op === 'z') {
+        closed = true;
+        if (points.length >= 2) subpaths.push({ points, closed: true });
+        points = [];
+        closed = false;
+      }
+    }
+    if (points.length >= 2) subpaths.push({ points, closed });
+    return subpaths;
+  }
+
+  if (obj instanceof Polyline || obj instanceof Polygon) {
+    const { d, cncType } = polylineToAbsolutePath(obj);
+    if (!d) return [];
+    const parsed = parsePath(d) as PathCommand[];
+    const points: { x: number; y: number }[] = [];
+    for (const cmd of parsed) {
+      const op = String(cmd[0]);
+      if (op === 'M' || op === 'L') points.push({ x: toNum(cmd[1]), y: toNum(cmd[2]) });
+    }
+    if (points.length < 2) return [];
+    return [{ points, closed: cncType === 'closed' || obj instanceof Polygon }];
+  }
+
+  if (obj instanceof Rect) {
+    const { d } = rectToAbsolutePath(obj);
+    const parsed = parsePath(d) as PathCommand[];
+    const points: { x: number; y: number }[] = [];
+    for (const cmd of parsed) {
+      const op = String(cmd[0]);
+      if (op === 'M' || op === 'L') points.push({ x: toNum(cmd[1]), y: toNum(cmd[2]) });
+    }
+    if (points.length < 2) return [];
+    return [{ points, closed: true }];
+  }
+
+  if (obj instanceof Group) {
+    return obj.getObjects().flatMap(collectAbsoluteBedSubpaths);
+  }
+
+  return [];
+}
+
 function serializeFabricObjectPaths(obj: FabricObject): string[] {
   if (obj instanceof Path) {
     const absolute = pathCommandsToAbsoluteBed(obj);
