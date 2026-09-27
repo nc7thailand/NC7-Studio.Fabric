@@ -1122,7 +1122,8 @@ export class FabricCanvas {
   }
 
   private shouldClamp(): boolean {
-    return this.lab.isEnabled('CORE-CLAMP');
+    // Sheet + margins are visual guides only — free placement anywhere on the canvas.
+    return false;
   }
 
   private onObjectTransformDuring(target?: FabricObject): void {
@@ -1273,13 +1274,28 @@ export class FabricCanvas {
 
   /** Split a traced_content collection into individual path scene objects (Ctrl+Shift+G). */
   async ungroupTracedCollection(): Promise<boolean> {
+    return this.explodeSelectedGroup();
+  }
+
+  /**
+   * Explode the selected Fabric Group one level: each child becomes its own scene object
+   * (nested Groups stay as subgroups; paths become standalone loops).
+   */
+  async explodeSelectedGroup(): Promise<boolean> {
     const active = this.canvas.getActiveObject();
-    if (!(active instanceof Group) || !active.get(NC7_TRACED_COLLECTION_KEY)) {
+    if (!(active instanceof Group) || isBedObject(active)) {
       return false;
     }
 
+    const children = active.getObjects();
+    if (children.length < 2 && !active.get(NC7_TRACED_COLLECTION_KEY)) {
+      // Single-child groups still explode so users can free the inner path/group.
+      if (children.length === 0) return false;
+    }
+
     const scene = this.manager.findByFabric(active);
-    const baseName = scene?.name?.replace(/\.svg$/i, '') ?? 'traced';
+    const baseName = (scene?.name ?? 'group').replace(/\.(svg|dxf)$/i, '');
+    const wasTraced = !!active.get(NC7_TRACED_COLLECTION_KEY);
 
     await this.withoutHistoryAsync(async () => {
       if (scene) {
@@ -1288,28 +1304,41 @@ export class FabricCanvas {
       this.canvas.discardActiveObject();
       this.canvas.remove(active);
 
-      const paths = active.removeAll();
+      // removeAll() exits children into canvas space with group transform applied.
+      const parts = active.removeAll();
       active.destroy();
 
       const added: FabricObject[] = [];
-      for (let i = 0; i < paths.length; i += 1) {
-        const path = paths[i];
-        path.set({ [NC7_TRACED_COLLECTION_KEY]: false, selectable: true, evented: true });
-        applyVectorizerEngineeringStyle(path);
-        stripActionControls(path);
-        this.canvas.add(path);
+      for (let i = 0; i < parts.length; i += 1) {
+        const part = parts[i];
+        part.set({
+          [NC7_TRACED_COLLECTION_KEY]: false,
+          selectable: true,
+          evented: true,
+          objectCaching: false,
+        });
+        if (wasTraced) {
+          applyVectorizerEngineeringStyle(part);
+        }
+        stripActionControls(part);
+        syncImportedGroupSelectionBounds(part);
+        this.canvas.add(part);
 
         const id = this.manager.newId();
-        const loopName =
-          paths.length === 1 ? `${baseName}.svg` : `${baseName}-loop-${i + 1}.svg`;
-        const entry: SceneObject = { id, name: loopName, fabricRef: path };
+        const partName =
+          parts.length === 1
+            ? `${baseName}.svg`
+            : part instanceof Group
+              ? `${baseName}-group-${i + 1}.svg`
+              : `${baseName}-part-${i + 1}.svg`;
+        const entry: SceneObject = { id, name: partName, fabricRef: part };
         this.manager.addObject(entry);
         this.recordAdd(entry);
-        added.push(path);
+        added.push(part);
       }
 
       if (added.length === 1) {
-        const only = this.manager.objects[this.manager.objects.length - 1];
+        const only = this.manager.findByFabric(added[0]);
         if (only) {
           this.manager.selectObject(only.id);
           this.canvas.setActiveObject(added[0]);
@@ -1317,12 +1346,20 @@ export class FabricCanvas {
       } else if (added.length > 1) {
         const selection = new ActiveSelection(added, { canvas: this.canvas });
         this.canvas.setActiveObject(selection);
+        this.manager.selectObject(null);
       }
 
       this.canvas.requestRenderAll();
     });
 
+    markDocumentChanged();
     return true;
+  }
+
+  /** True when the active selection is an explodable group (2+ children, or any Group). */
+  canExplodeSelectedGroup(): boolean {
+    const active = this.canvas.getActiveObject();
+    return active instanceof Group && !isBedObject(active) && active.getObjects().length >= 1;
   }
 
   async loadDemoSvg(): Promise<void> {

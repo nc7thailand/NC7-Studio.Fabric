@@ -185,6 +185,7 @@ export class StudioShell {
 
           <div id="object-context-menu" class="object-context-menu" role="menu" aria-label="Object actions" hidden>
             <button type="button" class="object-context-menu-item" data-ctx-action="size" role="menuitem">Size</button>
+            <button type="button" class="object-context-menu-item" data-ctx-action="explode" role="menuitem">Explode group</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="duplicate" role="menuitem">Duplicate</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="mirror-h" role="menuitem">Mirror horizontal</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="mirror-v" role="menuitem">Mirror vertical</button>
@@ -464,9 +465,9 @@ export class StudioShell {
         return;
       }
 
-      if (e.key === 'g' && e.shiftKey && labOptions.isEnabled('V-01')) {
+      if (e.key === 'g' && e.shiftKey) {
         e.preventDefault();
-        void this.canvas?.ungroupTracedCollection();
+        void this.canvas?.explodeSelectedGroup();
         return;
       }
 
@@ -616,6 +617,9 @@ export class StudioShell {
           case 'properties':
             this.openObjectPropertiesPanel();
             break;
+          case 'explode':
+            void this.canvas?.explodeSelectedGroup();
+            break;
           case 'duplicate':
             if (labOptions.isEnabled('F-01') && labOptions.isEnabled('F-04')) {
               void this.canvas?.duplicateSelected();
@@ -665,12 +669,15 @@ export class StudioShell {
 
     const duplicateOk = labOptions.isEnabled('F-01') && labOptions.isEnabled('F-04');
     const clipboardOk = labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04');
+    const explodeOk = kind === 'object' && !!this.canvas?.canExplodeSelectedGroup();
 
     menu.querySelectorAll('[data-ctx-action]').forEach((el) => {
       const action = el.getAttribute('data-ctx-action');
       if (!(el instanceof HTMLElement)) return;
       if (kind === 'canvas') {
         el.hidden = action !== 'paste';
+      } else if (action === 'explode') {
+        el.hidden = !explodeOk;
       } else {
         el.hidden = false;
       }
@@ -679,6 +686,7 @@ export class StudioShell {
     menu.querySelector('[data-ctx-action="duplicate"]')?.toggleAttribute('disabled', !duplicateOk);
     menu.querySelector('[data-ctx-action="copy"]')?.toggleAttribute('disabled', !clipboardOk);
     menu.querySelector('[data-ctx-action="paste"]')?.toggleAttribute('disabled', !clipboardOk);
+    menu.querySelector('[data-ctx-action="explode"]')?.toggleAttribute('disabled', !explodeOk);
 
     menu.hidden = false;
     menu.style.visibility = 'hidden';

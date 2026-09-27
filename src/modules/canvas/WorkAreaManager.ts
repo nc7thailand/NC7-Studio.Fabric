@@ -108,13 +108,8 @@ export class WorkAreaManager {
     });
     obj.setCoords();
 
-    const limits = getFabricPlacementLimits(
-      workArea.margins,
-      workArea.blockSize.width,
-      workArea.blockSize.height
-    );
-    const clamped = clampFabricObjectPosition(obj, state.left, state.top, limits);
-    obj.set({ left: clamped.left, top: clamped.top });
+    // Free placement — restore exact undo/redo coordinates (no sheet/margin clamp).
+    obj.set({ left: state.left, top: state.top });
     obj.setCoords();
     this.notify();
   }

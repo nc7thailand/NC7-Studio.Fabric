@@ -67,9 +67,9 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
       {
         id: 'CORE-CLAMP',
         label: 'Margin clamp',
-        detail: 'Keep objects inside red margin guide.',
+        detail: 'Optional: keep objects inside red margin guide. Off = free placement anywhere.',
         status: 'live',
-        defaultEnabled: true,
+        defaultEnabled: false,
       },
     ],
   },

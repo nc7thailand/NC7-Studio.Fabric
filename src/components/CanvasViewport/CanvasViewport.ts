@@ -58,6 +58,8 @@ export interface CanvasViewportHandle {
   setContextMenuLock: (locked: boolean) => void;
   applyWorkAreaConfig: (state: WorkAreaConfigState) => void;
   ungroupTracedCollection: () => Promise<boolean>;
+  explodeSelectedGroup: () => Promise<boolean>;
+  canExplodeSelectedGroup: () => boolean;
   onSceneChange: (cb: () => void) => void;
   onHistoryChange: (cb: (state: HistoryState) => void) => void;
   onTransformOverlay: (cb: (detail: TransformOverlayDetail | null) => void) => void;
@@ -184,6 +186,8 @@ export function mountCanvasViewport(
     setContextMenuLock: (locked) => fabric.setContextMenuLock(locked),
     applyWorkAreaConfig: (state) => fabric.applyWorkAreaConfig(state),
     ungroupTracedCollection: () => fabric.ungroupTracedCollection(),
+    explodeSelectedGroup: () => fabric.explodeSelectedGroup(),
+    canExplodeSelectedGroup: () => fabric.canExplodeSelectedGroup(),
     onSceneChange: (cb) => {
       sceneCallbacks.push(cb);
     },
