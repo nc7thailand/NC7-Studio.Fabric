@@ -26,8 +26,23 @@ export function getLegacyVectorizerUrl(embedFabric = true): string {
     return embedFabric ? `${base}?embed=fabric` : base;
   }
   const host = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+  // Mini / local only — never invent http://…:3009 under an HTTPS canvas host.
   const base = `http://${host}:${LEGACY_VECTORIZER_PORT}/vectorizer`;
   return embedFabric ? `${base}?embed=fabric` : base;
+}
+
+/** True when the default Mini HTTP embed would be blocked (or is unavailable). */
+export function isLegacyVectorizerBlockedByMixedContent(): boolean {
+  if (typeof window === 'undefined') return false;
+  const env = import.meta.env.VITE_LEGACY_VECTORIZER_URL as string | undefined;
+  if (env) {
+    try {
+      return new URL(env).protocol === 'http:' && window.location.protocol === 'https:';
+    } catch {
+      return true;
+    }
+  }
+  return window.location.protocol === 'https:';
 }
 
 export function getLegacyVectorizerOrigin(): string {
