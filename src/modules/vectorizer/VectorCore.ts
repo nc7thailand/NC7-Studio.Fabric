@@ -31,7 +31,11 @@ export interface TraceImageResult {
 
 export type TraceProgressCallback = (message: string) => void;
 
-/** Baseline monochrome profile from legacy Phase 0 spike (potraceVariants BASE). */
+/**
+ * Monochrome-only options. `extractcolors: true` hits a known wasm heap bug
+ * ("offset is out of bounds") on many normal-sized images in 0.4.x+.
+ * We binarize in JS first, so color extraction is unnecessary.
+ */
 const DEFAULT_POTRACE_OPTIONS = {
   turdsize: 2,
   turnpolicy: 4,
@@ -39,7 +43,7 @@ const DEFAULT_POTRACE_OPTIONS = {
   opticurve: 1,
   opttolerance: 0.2,
   pathonly: false,
-  extractcolors: true,
+  extractcolors: false,
   posterizelevel: 1,
   posterizationalgorithm: 0,
 } as const;
@@ -49,7 +53,8 @@ const DEFAULT_CONFIG: VectorCoreConfig = {
   turdSize: 2,
 };
 
-const MAX_TRACE_DIM = 800;
+/** Progressive max edge lengths — retry smaller on wasm heap failures. */
+const TRACE_SIZE_LADDER = [800, 640, 512, 400, 320] as const;
 const SUPPORTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 let initPromise: Promise<void> | null = null;
@@ -64,7 +69,33 @@ function ensurePotraceInit(): Promise<void> {
   return initPromise;
 }
 
-async function loadImageToCanvas(file: File): Promise<HTMLCanvasElement> {
+function isOffsetBoundsError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /offset is out of bounds/i.test(msg) || /RangeError/i.test(msg);
+}
+
+/** Keep even dimensions — some wasm paths mis-handle odd widths. */
+function evenSize(n: number): number {
+  const v = Math.max(2, Math.round(n));
+  return v % 2 === 0 ? v : v - 1;
+}
+
+function fitWithinMax(width: number, height: number, maxDim: number): { w: number; h: number } {
+  let w = width;
+  let h = height;
+  if (w > maxDim || h > maxDim) {
+    if (w > h) {
+      h = (h * maxDim) / w;
+      w = maxDim;
+    } else {
+      w = (w * maxDim) / h;
+      h = maxDim;
+    }
+  }
+  return { w: evenSize(w), h: evenSize(h) };
+}
+
+async function decodeImage(file: File): Promise<HTMLImageElement> {
   if (!file.type.startsWith('image/') || !SUPPORTED_TYPES.has(file.type)) {
     throw new Error('Unsupported file type. Use PNG or JPG.');
   }
@@ -77,39 +108,38 @@ async function loadImageToCanvas(file: File): Promise<HTMLCanvasElement> {
       image.onerror = () => reject(new Error('Could not decode image.'));
       image.src = url;
     });
-
-    let w = img.naturalWidth || img.width;
-    let h = img.naturalHeight || img.height;
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
     if (w <= 0 || h <= 0) {
       throw new Error('Image has invalid dimensions.');
     }
-
-    if (w > MAX_TRACE_DIM || h > MAX_TRACE_DIM) {
-      if (w > h) {
-        h = Math.round((h * MAX_TRACE_DIM) / w);
-        w = MAX_TRACE_DIM;
-      } else {
-        w = Math.round((w * MAX_TRACE_DIM) / h);
-        h = MAX_TRACE_DIM;
-      }
-    }
-
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas 2D context unavailable.');
-    ctx.drawImage(img, 0, 0, w, h);
-    return canvas;
+    return img;
   } finally {
     URL.revokeObjectURL(url);
   }
 }
 
-function binarizeCanvas(canvas: HTMLCanvasElement, threshold: number): void {
-  const ctx = canvas.getContext('2d');
+function rasterToBinarizedImageData(
+  img: HTMLImageElement,
+  maxDim: number,
+  threshold: number
+): { imageData: ImageData; width: number; height: number } {
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+  const { w, h } = fitWithinMax(srcW, srcH, maxDim);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('Canvas 2D context unavailable.');
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+  // Opaque white backdrop — avoids transparent JPEG edge artifacts.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
@@ -119,7 +149,7 @@ function binarizeCanvas(canvas: HTMLCanvasElement, threshold: number): void {
     data[i + 2] = v;
     data[i + 3] = 255;
   }
-  ctx.putImageData(imageData, 0, 0);
+  return { imageData, width: w, height: h };
 }
 
 function countSvgPaths(svg: string): number {
@@ -163,28 +193,65 @@ export class VectorCore {
 
     try {
       report('Loading image…');
-      const canvas = await loadImageToCanvas(file);
-
-      report(`Binarizing (threshold ${this.config.threshold})…`);
-      binarizeCanvas(canvas, this.config.threshold);
+      const img = await decodeImage(file);
 
       report('Initializing potrace WASM…');
       await ensurePotraceInit();
 
-      report('Tracing contours…');
       const options = {
         ...DEFAULT_POTRACE_OPTIONS,
         turdsize: this.config.turdSize,
       };
-      const svgText = await potrace(canvas, options);
-      const pathCount = countSvgPaths(svgText);
 
+      let lastError: unknown = null;
+      let svgText = '';
+      let usedW = 0;
+      let usedH = 0;
+
+      for (const maxDim of TRACE_SIZE_LADDER) {
+        report(`Binarizing (threshold ${this.config.threshold}, max ${maxDim}px)…`);
+        const { imageData, width, height } = rasterToBinarizedImageData(
+          img,
+          maxDim,
+          this.config.threshold
+        );
+        usedW = width;
+        usedH = height;
+
+        try {
+          report(`Tracing contours (${width}×${height})…`);
+          // Pass ImageData (not canvas) — avoids an extra internal getImageData copy path.
+          svgText = await potrace(imageData, options);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          console.warn(
+            `[VectorCore] potrace failed at ${width}×${height}:`,
+            err instanceof Error ? err.message : err
+          );
+          if (!isOffsetBoundsError(err)) {
+            throw err;
+          }
+          // Retry next smaller size on wasm heap / offset errors.
+        }
+      }
+
+      if (lastError || !svgText) {
+        throw lastError instanceof Error
+          ? lastError
+          : new Error(
+              'Trace failed (image too large for WASM heap). Try a smaller PNG/JPG or crop the subject.'
+            );
+      }
+
+      const pathCount = countSvgPaths(svgText);
       if (pathCount === 0) {
         throw new Error('Trace produced no paths — try adjusting threshold or turd size.');
       }
 
       job.status = 'done';
-      const summary = `Done — ${pathCount} path${pathCount === 1 ? '' : 's'} from ${file.name} (${canvas.width}×${canvas.height}px). Imported to canvas.`;
+      const summary = `Done — ${pathCount} path${pathCount === 1 ? '' : 's'} from ${file.name} (${usedW}×${usedH}px). Imported to canvas.`;
       job.message = summary;
 
       return {
@@ -212,7 +279,7 @@ export class VectorCore {
   }
 
   getMigrationNote(): string {
-    return 'V-01 live — esm-potrace-wasm trace → svgImport → F-50 auto-select.';
+    return 'V-01 live — esm-potrace-wasm mono trace → svgImport → F-50 auto-select.';
   }
 }
 
