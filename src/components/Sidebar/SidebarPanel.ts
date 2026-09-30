@@ -1,6 +1,6 @@
 import { icons } from '../StudioShell/toolbarIcons';
 import { workAreaConfig, STUDIO_ORIGINS, formatOriginLabel, type WorkAreaUnit } from '../../modules/config/WorkAreaConfig';
-import { VECTORIZER_PAUSED, VECTORIZER_PAUSED_MESSAGE } from '../../modules/vectorizer/vectorizerPause';
+import type { VectorCoreConfig } from '../../modules/vectorizer/VectorCore';
 import type { SceneObject } from '../../modules/canvas/WorkAreaManager';
 import type { LoopInfo } from '../../modules/canvas/loopMetrics';
 
@@ -84,8 +84,7 @@ export function renderToolsPanel(): string {
         <button type="button" class="tools-action-btn" data-dummy-add-wedding>Dummy add Wedding</button>
         <button type="button" class="tools-action-btn" data-open-panel="setup">Material Setup</button>
         <button type="button" class="tools-action-btn" disabled>Remote Access (soon)</button>
-        <button type="button" class="tools-action-btn" data-open-vectorcore ${VECTORIZER_PAUSED ? 'disabled title="Vectorizer paused"' : ''}>Trace Image (Legacy Vectorizer)</button>
-        ${VECTORIZER_PAUSED ? `<p class="section-hint vectorizer-paused-hint">${VECTORIZER_PAUSED_MESSAGE}</p>` : ''}
+        <button type="button" class="tools-action-btn" data-open-panel="vectorizer">Trace Image (Bitmap)</button>
         <button type="button" class="tools-action-btn" data-open-panel="devlab">Canvas Feature Lab</button>
       </div>
     </div>
@@ -212,23 +211,66 @@ export function renderSetupPanel(): string {
   `;
 }
 
-export function renderVectorizerPanel(): string {
+export type VectorizerPanelStatus = 'idle' | 'processing' | 'done' | 'error';
+
+export interface VectorizerPanelState {
+  message: string | null;
+  status: VectorizerPanelStatus;
+  config: VectorCoreConfig;
+}
+
+export function renderVectorizerPanel(state: VectorizerPanelState): string {
+  const { message, status, config } = state;
+  const statusClass =
+    status === 'processing'
+      ? 'is-processing'
+      : status === 'done'
+        ? 'is-done'
+        : status === 'error'
+          ? 'is-error'
+          : message
+            ? ''
+            : 'is-empty';
+  const displayMessage =
+    message ??
+    (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
+
   return `
     <div class="panel-sidebar vectorizer-panel-host">
       <div class="sidebar-header">
         <h1 class="logo-text">Trace <span class="logo-accent">Image</span></h1>
-        <span class="version-tag">Legacy · :3009</span>
+        <span class="version-tag">Bitmap · potrace WASM</span>
       </div>
       <div class="sidebar-content">
-        ${
-          VECTORIZER_PAUSED
-            ? `<p class="section-hint vectorizer-paused-hint">${VECTORIZER_PAUSED_MESSAGE}</p>`
-            : `<p class="section-hint">
-          Opens the production vectorizer from FoamArt Studio (:3009) inside NC7 Studio.Fabric.
-          Trace your image, then choose <strong>Send to Foam Bed Canvas</strong> to import SVG paths here.
+        <p class="section-hint">
+          Upload a raster image — potrace WASM traces paths and imports SVG to the foam bed.
         </p>
-        <button type="button" class="tools-action-btn" data-open-vectorcore>Open Legacy Vectorizer</button>`
-        }
+        <div class="input-grid">
+          <div class="input-group">
+            <label for="trace-threshold">Binarize threshold</label>
+            <div class="input-wrapper">
+              <input id="trace-threshold" type="range" min="10" max="240" step="1" value="${config.threshold}" ${status === 'processing' ? 'disabled' : ''} />
+              <span class="unit-label" id="trace-threshold-value">${config.threshold}</span>
+            </div>
+          </div>
+          <div class="input-group">
+            <label for="trace-turdsize">Turd size (despeckle)</label>
+            <div class="input-wrapper">
+              <input id="trace-turdsize" type="number" min="0" max="50" step="1" value="${config.turdSize}" ${status === 'processing' ? 'disabled' : ''} />
+            </div>
+          </div>
+        </div>
+        <div class="upload-zone">
+          <label for="trace-image-upload" class="upload-label ${status === 'processing' ? 'is-disabled' : ''}">
+            ${icons.upload}
+            <span class="upload-title">Choose image (PNG, JPG)</span>
+            <span class="upload-desc">${status === 'processing' ? 'Tracing in progress…' : 'Bitmap → SVG import'}</span>
+          </label>
+          <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
+        </div>
+        <div id="vectorizer-result" class="vectorizer-result ${statusClass}" role="status" aria-live="polite">
+          ${displayMessage}
+        </div>
       </div>
     </div>
   `;

@@ -7,6 +7,7 @@ import {
   renderToolsPanel,
   renderVectorizerPanel,
   type ObjectPanelData,
+  type VectorizerPanelState,
 } from '../Sidebar/SidebarPanel';
 import { bindDevLabPanel, renderDevLabPanel } from '../DevLab/DevLabPanel';
 import { mountCanvasViewport, type CanvasViewportHandle } from '../CanvasViewport/CanvasViewport';
@@ -21,6 +22,7 @@ import {
   type VectorizerExportData,
 } from '../../modules/vectorizer/vectorizerPostMessage';
 import { VECTORIZER_PAUSED } from '../../modules/vectorizer/vectorizerPause';
+import { vectorCore } from '../../modules/vectorizer/VectorCore';
 import {
   LAYOUT_EXPORT_DEFAULT,
   LAYOUT_OPEN_ACCEPT,
@@ -44,6 +46,11 @@ export class StudioShell {
   private objectPanelFocusSize = false;
   private exportModalOpen = false;
   private exportFormat: LayoutExportFormat = LAYOUT_EXPORT_DEFAULT;
+  private vectorizerState: VectorizerPanelState = {
+    message: null,
+    status: 'idle',
+    config: vectorCore.getConfig(),
+  };
   private readonly onDocumentPointerDown = (e: PointerEvent): void => {
     if (!this.objectContextMenuOpen) return;
     const menu = this.root.querySelector('#object-context-menu');
@@ -63,7 +70,7 @@ export class StudioShell {
   mount(): void {
     this.root.innerHTML = this.renderLayout();
     this.bindUi();
-    console.info('[NC7 Studio.Fabric] Legacy vectorizer embed at /vectorcore — port 3010');
+    console.info('[NC7 Studio.Fabric] Bitmap Trace (potrace WASM) + foam bed — port 3010');
   }
 
   private renderLayout(): string {
@@ -88,7 +95,7 @@ export class StudioShell {
 
         <section id="Pnl-Vectorizer" class="floating-panel" role="dialog" aria-label="Trace image" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
-          <div id="vectorizer-panel-host">${renderVectorizerPanel()}</div>
+          <div id="vectorizer-panel-host">${renderVectorizerPanel(this.vectorizerState)}</div>
         </section>
 
         <section id="Pnl-Object" class="floating-panel floating-panel--small" role="dialog" aria-label="Object properties" hidden>
@@ -806,6 +813,7 @@ export class StudioShell {
     if (this.openPanel === 'setup') this.refreshSetupPanel();
     if (this.openPanel === 'object') this.refreshObjectPanel();
     if (this.openPanel === 'file') this.refreshFilePanel();
+    if (this.openPanel === 'vectorizer') this.refreshVectorizerPanel();
 
     const fileOpen = this.openPanel === 'file';
     const toolsOpen = this.openPanel === 'tools';
@@ -813,6 +821,93 @@ export class StudioShell {
     const fileMenuBtn = this.root.querySelector('#btn-nc7-file');
     fileMenuBtn?.classList.toggle('active', fileOpen);
     this.root.querySelector('#btn-tools')?.classList.toggle('active', toolsOpen);
+  }
+
+  private refreshVectorizerPanel(): void {
+    const host = this.root.querySelector('#vectorizer-panel-host');
+    if (!(host instanceof HTMLElement)) return;
+    this.vectorizerState.config = vectorCore.getConfig();
+    host.innerHTML = renderVectorizerPanel(this.vectorizerState);
+    this.bindVectorizerPanel(host);
+  }
+
+  private setVectorizerState(partial: Partial<VectorizerPanelState>): void {
+    this.vectorizerState = { ...this.vectorizerState, ...partial };
+    const resultEl = this.root.querySelector('#vectorizer-result');
+    if (resultEl instanceof HTMLElement) {
+      const { message, status } = this.vectorizerState;
+      resultEl.textContent =
+        message ??
+        (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
+      resultEl.classList.remove('is-empty', 'is-processing', 'is-done', 'is-error');
+      if (status === 'processing') resultEl.classList.add('is-processing');
+      else if (status === 'done') resultEl.classList.add('is-done');
+      else if (status === 'error') resultEl.classList.add('is-error');
+      else if (!message) resultEl.classList.add('is-empty');
+    }
+  }
+
+  private bindVectorizerPanel(scope: ParentNode): void {
+    const thresholdEl = scope.querySelector('#trace-threshold');
+    const thresholdValueEl = scope.querySelector('#trace-threshold-value');
+    const turdEl = scope.querySelector('#trace-turdsize');
+
+    thresholdEl?.addEventListener('input', (e) => {
+      const input = e.target as HTMLInputElement;
+      const n = parseInt(input.value, 10);
+      if (Number.isFinite(n)) {
+        vectorCore.setConfig({ threshold: n });
+        if (thresholdValueEl) thresholdValueEl.textContent = String(n);
+      }
+    });
+
+    turdEl?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const n = parseInt(input.value, 10);
+      if (Number.isFinite(n) && n >= 0) {
+        vectorCore.setConfig({ turdSize: n });
+      }
+    });
+
+    scope.querySelector('#trace-image-upload')?.addEventListener('change', (e) => {
+      const input = e.target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = '';
+      if (!file) return;
+
+      if (!labOptions.isEnabled('V-01')) {
+        this.setVectorizerState({
+          status: 'error',
+          message: 'Bitmap tracing (V-01) is disabled in Dev Lab.',
+        });
+        return;
+      }
+
+      void (async () => {
+        this.setVectorizerState({ status: 'processing', message: 'Starting trace…' });
+        const result = await vectorCore.traceImage(file, (msg) => {
+          this.setVectorizerState({ status: 'processing', message: msg });
+        });
+
+        this.setVectorizerState({
+          status: result.job.status === 'error' ? 'error' : 'done',
+          message: result.summary,
+        });
+
+        if (result.svgText && this.canvas) {
+          const name = file.name.replace(/\.[^.]+$/, '') + '.svg';
+          try {
+            await this.canvas.importVectorizerSvg(result.svgText, name);
+          } catch (err) {
+            console.error('[StudioShell] bitmap trace import failed', err);
+            this.setVectorizerState({
+              status: 'error',
+              message: err instanceof Error ? err.message : 'Import failed',
+            });
+          }
+        }
+      })();
+    });
   }
 
   /** One delegated listener — survives file list re-renders. */

@@ -11,4 +11,8 @@ export default defineConfig({
     port: 8080,
     host: true,
   },
+  optimizeDeps: {
+    exclude: ['esm-potrace-wasm'],
+  },
+  assetsInclude: ['**/*.wasm'],
 });

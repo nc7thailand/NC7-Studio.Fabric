@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "dxf-parser": "^1.1.2",
+    "esm-potrace-wasm": "^0.4.4",
     "fabric": "^7.4.0"
   },
   "devDependencies": {

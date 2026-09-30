@@ -209,8 +209,8 @@ export const LAB_FEATURE_GROUPS: LabFeatureGroup[] = [
       },
       {
         id: 'V-01',
-        label: 'Legacy vectorizer handoff',
-        detail: 'Import SVG from :3009 vectorizer embed via localStorage buffer.',
+        label: 'Bitmap Trace (potrace WASM)',
+        detail: 'Tools → Trace Image: PNG/JPG → SVG via esm-potrace-wasm, then import to bed.',
         status: 'live',
         defaultEnabled: true,
       },
