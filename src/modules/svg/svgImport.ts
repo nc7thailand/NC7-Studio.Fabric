@@ -481,10 +481,17 @@ export function prepareSandboxLayoutObject(obj: FabricObject): void {
 
 export function prepareLayoutObject(obj: FabricObject): void {
   normalizeFabricObjectToCncFrame(obj);
+  applyStrokeOnlyLayoutStyle(obj);
+  obj.setCoords();
+}
+
+/** Transparent fill + palette stroke on object and nested children (no re-normalize). */
+function applyStrokeOnlyLayoutStyle(obj: FabricObject): void {
   const palette = canvasPalette.getState();
   obj.set({
     stroke: palette.objectStroke,
-    strokeWidth: obj.strokeWidth ?? 2,
+    strokeWidth:
+      typeof obj.strokeWidth === 'number' && obj.strokeWidth > 0 ? obj.strokeWidth : 2,
     fill: 'transparent',
     opacity: 1,
     cornerColor: palette.handleCorner,
@@ -494,7 +501,11 @@ export function prepareLayoutObject(obj: FabricObject): void {
     selectable: true,
     evented: true,
   });
-  obj.setCoords();
+  if (obj instanceof Group) {
+    for (const child of obj.getObjects()) {
+      applyStrokeOnlyLayoutStyle(child);
+    }
+  }
 }
 
 /** Engineering overrides for legacy vectorizer handoff (white strokes, yellow handles). */

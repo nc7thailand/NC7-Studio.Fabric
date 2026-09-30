@@ -1267,6 +1267,9 @@ export class FabricCanvas {
       });
     }
 
+    // Force stroke-only engineering style on nested paths (potrace fills are black by default).
+    applyVectorizerEngineeringStyle(obj);
+
     this.focusObjectInView(obj);
     this.canvas.requestRenderAll();
     return id;

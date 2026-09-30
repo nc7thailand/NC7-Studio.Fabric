@@ -157,6 +157,57 @@ function countSvgPaths(svg: string): number {
   return matches ? matches.length : 0;
 }
 
+/**
+ * Potrace emits filled black silhouettes. CNC / foam bed needs stroke outlines only
+ * with a fully transparent fill (no background plate).
+ */
+export function toStrokeOnlySvg(
+  svgText: string,
+  stroke = '#FFFFFF',
+  strokeWidth = 2
+): string {
+  if (typeof DOMParser === 'undefined' || typeof XMLSerializer === 'undefined') {
+    return svgText
+      .replace(/\sfill="[^"]*"/gi, ' fill="none"')
+      .replace(/\sfill='[^']*'/gi, " fill='none'");
+  }
+
+  try {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+    const root = doc.documentElement;
+    if (!root || root.querySelector('parsererror')) return svgText;
+
+    root.querySelectorAll('path, polygon, polyline, circle, ellipse, rect').forEach((el) => {
+      el.setAttribute('fill', 'none');
+      el.setAttribute('fill-opacity', '0');
+      el.setAttribute('stroke', stroke);
+      el.setAttribute('stroke-width', String(strokeWidth));
+      el.setAttribute('stroke-linejoin', 'round');
+      el.setAttribute('stroke-linecap', 'round');
+
+      const style = el.getAttribute('style');
+      if (style) {
+        const cleaned = style
+          .replace(/fill\s*:[^;]+;?/gi, 'fill:none;')
+          .replace(/fill-opacity\s*:[^;]+;?/gi, 'fill-opacity:0;');
+        el.setAttribute('style', cleaned);
+      }
+    });
+
+    // Drop opaque page backgrounds if potrace wrapped a white rect.
+    root.querySelectorAll('rect').forEach((el) => {
+      const fill = (el.getAttribute('fill') || '').toLowerCase();
+      if (fill === '#fff' || fill === '#ffffff' || fill === 'white') {
+        el.remove();
+      }
+    });
+
+    return new XMLSerializer().serializeToString(root);
+  } catch {
+    return svgText;
+  }
+}
+
 export class VectorCore {
   private config: VectorCoreConfig;
   private jobs: VectorJob[] = [];
@@ -250,8 +301,11 @@ export class VectorCore {
         throw new Error('Trace produced no paths — try adjusting threshold or turd size.');
       }
 
+      // Outline only — transparent fill, no silhouette background.
+      svgText = toStrokeOnlySvg(svgText);
+
       job.status = 'done';
-      const summary = `Done — ${pathCount} path${pathCount === 1 ? '' : 's'} from ${file.name} (${usedW}×${usedH}px). Imported to canvas.`;
+      const summary = `Done — ${pathCount} outline path${pathCount === 1 ? '' : 's'} from ${file.name} (${usedW}×${usedH}px). Imported to canvas.`;
       job.message = summary;
 
       return {
