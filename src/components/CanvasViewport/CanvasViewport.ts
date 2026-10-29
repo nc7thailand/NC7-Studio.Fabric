@@ -35,6 +35,7 @@ export interface CanvasViewportHandle {
   loadDummyWeddingSvg: () => Promise<void>;
   addRectangle: () => void;
   removeObject: (id: string) => void;
+  deleteSelected: () => Promise<boolean>;
   selectObject: (id: string | null) => void;
   copyToClipboard: () => boolean;
   pasteFromClipboard: (at?: { clientX: number; clientY: number }) => Promise<void>;
@@ -171,6 +172,7 @@ export function mountCanvasViewport(
     loadDummyWeddingSvg: () => fabric.loadDummyWeddingSvg(),
     addRectangle: () => fabric.addRectangle(),
     removeObject: (id) => fabric.removeSceneObject(id),
+    deleteSelected: () => fabric.deleteSelected(),
     selectObject: (id) => manager.selectObject(id),
     copyToClipboard: () => fabric.copyToClipboard(),
     pasteFromClipboard: async (at) => {

@@ -28,6 +28,7 @@ import {
   LAYOUT_OPEN_ACCEPT,
   type LayoutExportFormat,
 } from '../../modules/cad/fileFormats';
+import { sendToTargetApp, showTransferToast } from '../../modules/export/interAppTransfer';
 
 export class StudioShell {
   private root: HTMLElement;
@@ -134,8 +135,26 @@ export class StudioShell {
                         <button type="button" class="action-menu-item" id="btn-open-layout" role="menuitem">Open File…</button>
                         <button type="button" class="action-menu-item" id="btn-export-layout" role="menuitem">Export…</button>
                         <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="file" role="menuitem">Files on bed…</button>
+                        <span class="action-menu-divider" aria-hidden="true"></span>
+                        <button type="button" class="action-menu-item action-menu-item--send" id="btn-sub-send-pathfinder" role="menuitem">
+                          <span>Send to PathFinder</span>
+                          <span class="action-menu-shortcut">${icons.externalLink}</span>
+                        </button>
+                        <button type="button" class="action-menu-item action-menu-item--send" id="btn-sub-send-3dsym" role="menuitem">
+                          <span>Send to 3dSym</span>
+                          <span class="action-menu-shortcut">${icons.externalLink}</span>
+                        </button>
                       </div>
                     </div>
+                    <button type="button" class="action-menu-item action-menu-item--send" id="btn-send-pathfinder" role="menuitem">
+                      <span>Send to PathFinder</span>
+                      <span class="action-menu-shortcut">${icons.externalLink}</span>
+                    </button>
+                    <button type="button" class="action-menu-item action-menu-item--send" id="btn-send-3dsym" role="menuitem">
+                      <span>Send to 3dSym</span>
+                      <span class="action-menu-shortcut">${icons.externalLink}</span>
+                    </button>
+                    <span class="action-menu-divider" aria-hidden="true"></span>
                     <button type="button" class="action-menu-item action-menu-item--history" id="btn-menu-undo" disabled role="menuitem">
                       <span>Undo</span>
                       <span class="action-menu-shortcut">Cmd+Z</span>
@@ -143,6 +162,10 @@ export class StudioShell {
                     <button type="button" class="action-menu-item action-menu-item--history" id="btn-menu-redo" disabled role="menuitem">
                       <span>Redo</span>
                       <span class="action-menu-shortcut">Cmd+Shift+Z</span>
+                    </button>
+                    <button type="button" class="action-menu-item" id="btn-menu-delete" role="menuitem">
+                      <span>Delete</span>
+                      <span class="action-menu-shortcut">Del / ⌫</span>
                     </button>
                     <span class="action-menu-divider" aria-hidden="true"></span>
                     <button type="button" class="action-menu-item" id="btn-dummy-abc" data-dummy-add-abc role="menuitem">Add dummy ABC</button>
@@ -396,6 +419,57 @@ export class StudioShell {
     this.root.querySelector('#btn-sub-redo')?.addEventListener('click', triggerRedo);
     this.root.querySelector('#btn-menu-redo')?.addEventListener('click', triggerRedo);
 
+    this.root.querySelector('#btn-menu-delete')?.addEventListener('click', () => {
+      this.closeToolbarMenus();
+      void this.canvas?.deleteSelected();
+    });
+
+    const triggerSendToPathFinder = (): void => {
+      this.closeToolbarMenus();
+      if (!this.canvas) return;
+      const count = this.canvas.getObjectCount();
+      if (count === 0) {
+        showTransferToast('Cannot send: no objects on the foam bed.', true);
+        return;
+      }
+      const svg = this.canvas.exportSvg();
+      const dxf = this.canvas.exportDxf();
+      const activeName = this.canvas.getActiveObjectName();
+      const baseName = (activeName || 'layout').replace(/\.(svg|dxf)$/i, '');
+      sendToTargetApp({
+        target: 'pathfinder',
+        svgContent: svg,
+        dxfContent: dxf,
+        filename: `${baseName}-pathfinder.svg`,
+      });
+    };
+
+    const triggerSendTo3dSym = (): void => {
+      this.closeToolbarMenus();
+      if (!this.canvas) return;
+      const count = this.canvas.getObjectCount();
+      if (count === 0) {
+        showTransferToast('Cannot send: no objects on the foam bed.', true);
+        return;
+      }
+      const svg = this.canvas.exportSvg();
+      const dxf = this.canvas.exportDxf();
+      const activeName = this.canvas.getActiveObjectName();
+      const baseName = (activeName || 'profile').replace(/\.(svg|dxf)$/i, '');
+      sendToTargetApp({
+        target: '3dsym',
+        svgContent: svg,
+        dxfContent: dxf,
+        filename: `${baseName}-profile.svg`,
+      });
+    };
+
+    this.root.querySelector('#btn-send-pathfinder')?.addEventListener('click', triggerSendToPathFinder);
+    this.root.querySelector('#btn-sub-send-pathfinder')?.addEventListener('click', triggerSendToPathFinder);
+
+    this.root.querySelector('#btn-send-3dsym')?.addEventListener('click', triggerSendTo3dSym);
+    this.root.querySelector('#btn-sub-send-3dsym')?.addEventListener('click', triggerSendTo3dSym);
+
     this.root.querySelector('#btn-tool-select')?.addEventListener('click', () => {
       this.setToolMode('select');
     });
@@ -494,6 +568,16 @@ export class StudioShell {
         return;
       }
 
+      if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete' || e.code === 'Backspace') {
+        const exportDialog = this.root.querySelector('#export-format-dialog');
+        if (exportDialog && !exportDialog.hasAttribute('hidden')) {
+          return;
+        }
+        e.preventDefault();
+        void this.canvas?.deleteSelected();
+        return;
+      }
+
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) {
         if (e.key === 'h' || e.key === 'H') {
@@ -518,6 +602,13 @@ export class StudioShell {
       if (e.key === 'c' && labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
         e.preventDefault();
         this.canvas?.copyToClipboard();
+        return;
+      }
+
+      if (e.key === 'x' && labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
+        e.preventDefault();
+        this.canvas?.copyToClipboard();
+        void this.canvas?.deleteSelected();
         return;
       }
 
@@ -722,6 +813,12 @@ export class StudioShell {
           case 'mirror-v':
             this.canvas?.mirrorSelectedObject('vertical');
             break;
+          case 'cut':
+            if (labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
+              this.canvas?.copyToClipboard();
+              void this.canvas?.deleteSelected();
+            }
+            break;
           case 'copy':
             if (labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04')) {
               this.canvas?.copyToClipboard();
@@ -740,8 +837,7 @@ export class StudioShell {
             }
             break;
           case 'delete': {
-            const id = this.canvas?.manager.selectedObjectId;
-            if (id) this.canvas?.removeObject(id);
+            void this.canvas?.deleteSelected();
             break;
           }
         }

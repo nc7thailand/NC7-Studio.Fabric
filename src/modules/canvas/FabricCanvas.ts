@@ -157,16 +157,23 @@ export class FabricCanvas {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    const target = e.target;
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target as HTMLElement)?.isContentEditable
+    ) {
+      return;
+    }
+
+    if ((e.code === 'Delete' || e.code === 'Backspace' || e.key === 'Delete' || e.key === 'Backspace') && !e.repeat) {
+      e.preventDefault();
+      void this.deleteSelected();
+      return;
+    }
+
     if (e.code === 'Space' && !e.repeat) {
-      const target = e.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        (target as HTMLElement)?.isContentEditable
-      ) {
-        return;
-      }
       e.preventDefault();
       this.isSpacePressed = true;
       if (!this.isDraggingViewport) {
@@ -503,6 +510,10 @@ export class FabricCanvas {
   private canOpenObjectContextMenu(target?: FabricObject): target is FabricObject {
     if (!target || isBedObject(target)) return false;
     if (isActiveSelection(target)) return true;
+    const active = this.canvas.getActiveObject();
+    if (active && isActiveSelection(active) && active.getObjects().includes(target)) {
+      return true;
+    }
     return Boolean(this.manager.findByFabric(target));
   }
 
@@ -519,7 +530,13 @@ export class FabricCanvas {
   ): void {
     if (kind === 'object') {
       if (!this.canOpenObjectContextMenu(target)) return;
-      if (isActiveSelection(target)) {
+      const active = this.canvas.getActiveObject();
+      const isTargetInMultiSelect =
+        active &&
+        isActiveSelection(active) &&
+        (target === active || (target && active.getObjects().includes(target)));
+
+      if (isTargetInMultiSelect) {
         // Multi-selection is already active on canvas; keep it intact
       } else if (target) {
         const scene = this.manager.findByFabric(target);
@@ -857,7 +874,6 @@ export class FabricCanvas {
           stripActionControls(obj);
           this.canvas.add(obj);
           this.manager.addObject({ id: entry.id, name: entry.name, fabricRef: obj });
-          this.canvas.setActiveObject(obj);
           this.canvas.requestRenderAll();
         });
       },
@@ -876,6 +892,12 @@ export class FabricCanvas {
       },
       selectObject: (id) => {
         this.manager.selectObject(id);
+      },
+      selectObjects: (ids) => {
+        const objs = ids
+          .map((id) => this.manager.findById(id)?.fabricRef)
+          .filter((ref): ref is FabricObject => !!ref);
+        this.selectMultipleObjects(objs);
       },
     };
   }
@@ -916,6 +938,14 @@ export class FabricCanvas {
       return;
     }
     globalHistory.recordDelete(scene);
+  }
+
+  private recordBatchDelete(scenes: SceneObject[]): void {
+    if (!this.shouldRecordHistory()) {
+      markDocumentChanged();
+      return;
+    }
+    globalHistory.recordBatchDelete(scenes);
   }
 
   private onInteractionBegin(target?: FabricObject): void {
@@ -1921,9 +1951,61 @@ export class FabricCanvas {
     const scene = this.manager.findById(id);
     if (!scene) return;
     if (recordHistory) this.recordDelete(scene);
+    const active = this.canvas.getActiveObject();
+    if (active === scene.fabricRef || (isActiveSelection(active) && active.getObjects().includes(scene.fabricRef))) {
+      this.canvas.discardActiveObject();
+    }
     this.canvas.remove(scene.fabricRef);
     this.manager.removeObject(id);
     this.canvas.requestRenderAll();
+  }
+
+  async deleteSelected(): Promise<boolean> {
+    const activeObjects = this.canvas.getActiveObjects();
+    const scenesToDelete: SceneObject[] = [];
+
+    if (activeObjects.length > 0) {
+      for (const obj of activeObjects) {
+        if (isBedObject(obj)) continue;
+        const scene = this.manager.findByFabric(obj);
+        if (scene && !scenesToDelete.some((s) => s.id === scene.id)) {
+          scenesToDelete.push(scene);
+        }
+      }
+    } else if (this.manager.selectedObjectId) {
+      const scene = this.manager.findById(this.manager.selectedObjectId);
+      if (scene) {
+        scenesToDelete.push(scene);
+      }
+    }
+
+    if (scenesToDelete.length === 0) return false;
+
+    if (this.shouldRecordHistory()) {
+      if (scenesToDelete.length === 1) {
+        this.recordDelete(scenesToDelete[0]);
+      } else {
+        this.recordBatchDelete(scenesToDelete);
+      }
+    } else {
+      markDocumentChanged();
+    }
+
+    this.syncingSelection = true;
+    try {
+      this.canvas.discardActiveObject();
+      for (const scene of scenesToDelete) {
+        this.canvas.remove(scene.fabricRef);
+        this.manager.removeObject(scene.id);
+      }
+      this.manager.selectObject(null);
+    } finally {
+      this.syncingSelection = false;
+    }
+
+    this.canvas.requestRenderAll();
+    markDocumentChanged();
+    return true;
   }
 
   getUserObjectCount(): number {

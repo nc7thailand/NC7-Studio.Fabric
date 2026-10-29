@@ -44,6 +44,7 @@ export interface HistoryEntry {
   before?: FabricTransformState;
   after?: FabricTransformState | null;
   deletedObject?: SerializedFabricObject;
+  deletedObjects?: SerializedFabricObject[];
   addedObject?: SerializedFabricObject;
   objectSnapshots?: NestSnapshot[];
   afterSnapshots?: NestSnapshot[] | null;
@@ -64,6 +65,7 @@ export interface HistoryAdapter {
   restoreDeletedObject(entry: SerializedFabricObject): Promise<void>;
   restoreAddedObject(entry: SerializedFabricObject): Promise<void>;
   selectObject(id: string | null): void;
+  selectObjects?: (ids: string[]) => void;
 }
 
 function getBeforeState(entry: HistoryEntry): FabricTransformState | null {
@@ -84,13 +86,23 @@ class GlobalHistoryStack {
   getState(): HistoryState {
     const latest = this.peek();
     const latestRedo = this.peekRedo();
+    const undoLabel = latest
+      ? latest.type === 'delete' && latest.deletedObjects?.length
+        ? 'Undo: Restore Deleted Objects'
+        : HISTORY_LABELS[latest.type] ?? 'Undo'
+      : '';
+    const redoLabel = latestRedo
+      ? latestRedo.type === 'delete' && latestRedo.deletedObjects?.length
+        ? 'Redo: Delete Objects'
+        : REDO_LABELS[latestRedo.type] ?? 'Redo'
+      : '';
     return {
       canUndo: this.canUndo(),
       canRedo: this.canRedo(),
       latest,
       latestRedo,
-      label: latest ? HISTORY_LABELS[latest.type] ?? 'Undo' : '',
-      redoLabel: latestRedo ? REDO_LABELS[latestRedo.type] ?? 'Redo' : '',
+      label: undoLabel,
+      redoLabel,
     };
   }
 
@@ -167,6 +179,24 @@ class GlobalHistoryStack {
     });
   }
 
+  recordBatchDelete(scenes: Array<{ id: string; name: string; fabricRef: FabricObject }>): void {
+    if (scenes.length === 0) return;
+    if (scenes.length === 1) {
+      this.recordDelete(scenes[0]);
+      return;
+    }
+    const deletedObjects = scenes.map((scene) => ({
+      id: scene.id,
+      name: scene.name,
+      fabricJson: scene.fabricRef.toObject(['sceneId', 'sceneName']) as Record<string, unknown>,
+    }));
+    this.push({
+      type: 'delete',
+      objectId: scenes[0].id,
+      deletedObjects,
+    });
+  }
+
   recordAdd(scene: { id: string; name: string; fabricRef: FabricObject }): void {
     const fabricJson = scene.fabricRef.toObject(['sceneId', 'sceneName']) as Record<string, unknown>;
     this.push({
@@ -206,10 +236,21 @@ class GlobalHistoryStack {
   }
 
   private async applyUndo(adapter: HistoryAdapter, entry: HistoryEntry): Promise<void> {
-    if (entry.type === 'delete' && entry.deletedObject) {
-      await adapter.restoreDeletedObject(entry.deletedObject);
-      adapter.selectObject(entry.deletedObject.id);
-      return;
+    if (entry.type === 'delete') {
+      if (entry.deletedObjects?.length) {
+        for (const deleted of entry.deletedObjects) {
+          await adapter.restoreDeletedObject(deleted);
+        }
+        if (adapter.selectObjects) {
+          adapter.selectObjects(entry.deletedObjects.map((o) => o.id));
+        }
+        return;
+      }
+      if (entry.deletedObject) {
+        await adapter.restoreDeletedObject(entry.deletedObject);
+        adapter.selectObject(entry.deletedObject.id);
+        return;
+      }
     }
     if (entry.type === 'add' && entry.objectId) {
       adapter.removeObject(entry.objectId);
@@ -229,9 +270,17 @@ class GlobalHistoryStack {
   }
 
   private async applyRedo(adapter: HistoryAdapter, entry: HistoryEntry): Promise<void> {
-    if (entry.type === 'delete' && entry.objectId) {
-      adapter.removeObject(entry.objectId);
-      return;
+    if (entry.type === 'delete') {
+      if (entry.deletedObjects?.length) {
+        for (const deleted of entry.deletedObjects) {
+          adapter.removeObject(deleted.id);
+        }
+        return;
+      }
+      if (entry.objectId) {
+        adapter.removeObject(entry.objectId);
+        return;
+      }
     }
     if (entry.type === 'add' && entry.addedObject) {
       await adapter.restoreAddedObject(entry.addedObject);
