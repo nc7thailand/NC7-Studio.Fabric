@@ -802,11 +802,16 @@ body.dev-route {
 .preview-svg-container svg path,
 .preview-svg-container svg polygon,
 .preview-svg-container svg polyline,
-.preview-svg-container svg circle {
-  stroke: #38bdf8 !important;
-  stroke-width: 1.5px !important;
-  fill: rgba(56, 189, 248, 0.08) !important;
-  filter: drop-shadow(0 0 2px rgba(56, 189, 248, 0.5));
+.preview-svg-container svg circle,
+.preview-svg-container svg ellipse,
+.preview-svg-container svg line {
+  stroke: #ffffff !important;
+  stroke-width: 2.5px !important;
+  vector-effect: non-scaling-stroke !important;
+  stroke-linejoin: round !important;
+  stroke-linecap: round !important;
+  fill: rgba(255, 255, 255, 0.05) !important;
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.7));
 }
 
 .preview-placeholder {

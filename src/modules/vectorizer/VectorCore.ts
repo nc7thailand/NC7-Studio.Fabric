@@ -170,7 +170,7 @@ function countSvgPaths(svg: string): number {
 export function toStrokeOnlySvg(
   svgText: string,
   stroke = '#FFFFFF',
-  strokeWidth = 2
+  strokeWidth = 2.5
 ): string {
   if (typeof DOMParser === 'undefined' || typeof XMLSerializer === 'undefined') {
     return svgText
@@ -190,6 +190,7 @@ export function toStrokeOnlySvg(
       el.setAttribute('stroke-width', String(strokeWidth));
       el.setAttribute('stroke-linejoin', 'round');
       el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('vector-effect', 'non-scaling-stroke');
 
       const style = el.getAttribute('style');
       if (style) {
