@@ -14,13 +14,6 @@ export function syncImportedGroupSelectionBounds(obj: FabricObject): void {
     return;
   }
 
-  const kept = filterStrayImportPaths([...obj.getObjects()]);
-  for (const child of [...obj.getObjects()]) {
-    if (!kept.includes(child)) {
-      obj.remove(child);
-    }
-  }
-
   const children = obj.getObjects();
   if (children.length === 0) {
     obj.setCoords();

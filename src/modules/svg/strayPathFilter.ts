@@ -1,10 +1,7 @@
 import { Group, Path, Rect, type FabricObject } from 'fabric';
-import { getCncBoundingRect } from './pathCncGeometry';
 
 const LIGHT_CHANNEL_MIN = 0.9;
 const MIN_FILL_ALPHA = 0.2;
-const TINY_AREA_RATIO = 0.005;
-const OUTLIER_DISTANCE_FACTOR = 4;
 
 type Rgb = { r: number; g: number; b: number; a: number };
 
@@ -82,73 +79,12 @@ export function isStrayBackgroundShape(obj: FabricObject): boolean {
   return false;
 }
 
-type ObjMetric = {
-  obj: FabricObject;
-  area: number;
-  cx: number;
-  cy: number;
-};
-
-function buildMetrics(objects: FabricObject[]): ObjMetric[] {
-  return objects.map((obj) => {
-    const b = getCncBoundingRect(obj);
-    return {
-      obj,
-      area: Math.max(0, b.width * b.height),
-      cx: b.left + b.width / 2,
-      cy: b.top + b.height / 2,
-    };
-  });
-}
-
-/** Drop paths far from the main art cluster and tiny specks; always keep largest loop. */
-export function filterStrayOutlierPaths(objects: FabricObject[]): FabricObject[] {
-  if (objects.length <= 1) return objects;
-
-  const metrics = buildMetrics(objects);
-  const byArea = [...metrics].sort((a, b) => b.area - a.area);
-  const largest = byArea[0];
-  const minKeepArea = largest.area * TINY_AREA_RATIO;
-
-  let weight = 0;
-  let clusterCx = 0;
-  let clusterCy = 0;
-  for (const m of metrics) {
-    if (m.area < minKeepArea) continue;
-    weight += m.area;
-    clusterCx += m.cx * m.area;
-    clusterCy += m.cy * m.area;
-  }
-  if (weight <= 0) return objects;
-
-  clusterCx /= weight;
-  clusterCy /= weight;
-
-  const areas = metrics.map((m) => m.area).sort((a, b) => a - b);
-  const medianArea = areas[Math.floor(areas.length / 2)] ?? largest.area;
-  const maxDist = Math.sqrt(Math.max(medianArea, 1)) * OUTLIER_DISTANCE_FACTOR;
-
-  const kept = metrics.filter((m) => {
-    if (m.obj === largest.obj) return true;
-    if (m.area < minKeepArea) return false;
-    const dist = Math.hypot(m.cx - clusterCx, m.cy - clusterCy);
-    return dist <= maxDist;
-  });
-
-  return kept.length > 0 ? kept.map((m) => m.obj) : objects;
-}
-
 /**
- * Strip background rectangles and bbox outliers before grouping an imported SVG.
+ * Strip background rectangles before grouping an imported SVG.
+ * All actual artwork paths (text, details, nested loops) are preserved.
  */
 export function filterStrayImportPaths(objects: FabricObject[]): FabricObject[] {
   const flat = flattenImportPaths(objects);
   const withoutBg = flat.filter((o) => !isStrayBackgroundShape(o));
-  const base = withoutBg.length > 0 ? withoutBg : flat;
-  const cleaned = filterStrayOutlierPaths(base);
-  const removed = flat.length - cleaned.length;
-  if (removed > 0) {
-    console.info(`[svgImport] removed ${removed} stray path(s) from import`);
-  }
-  return cleaned;
+  return withoutBg.length > 0 ? withoutBg : flat;
 }

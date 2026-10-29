@@ -12,6 +12,7 @@ import type { WorkAreaManager, SceneObject } from './WorkAreaManager';
 import { getSceneCanvas } from './sceneCanvas';
 import {
   autoPlaceOnBed,
+  applyStrokeOnlyLayoutStyle,
   applyVectorizerEngineeringStyle,
   centerObjectInPlacementLimits,
   fabricObjectFromSvg,
@@ -25,7 +26,13 @@ import {
   scheduleImportedBoundsRefresh,
   syncImportedGroupSelectionBounds,
 } from '../svg/importBoundsSync';
-import { exportCncLayoutSvg, getCncBoundingRect, normalizeFabricObjectToCncFrame } from '../svg/pathCncGeometry';
+import {
+  canSplitCompoundPath,
+  exportCncLayoutSvg,
+  getCncBoundingRect,
+  normalizeFabricObjectToCncFrame,
+  splitCompoundPath,
+} from '../svg/pathCncGeometry';
 import { loadDxfLayoutAsGroup } from '../cad/dxfImport';
 import { exportCncLayoutDxf } from '../cad/dxfExport';
 import { canvasPalette } from '../devlab/CanvasPalette';
@@ -49,6 +56,11 @@ import {
   type ClipboardHost,
 } from './canvasClipboard';
 import { getObjectCncSize, resizeObjectToCncSize } from './objectSizeResize';
+
+export function isActiveSelection(obj?: FabricObject | null): obj is ActiveSelection {
+  if (!obj) return false;
+  return obj instanceof ActiveSelection || obj.type?.toLowerCase() === 'activeselection';
+}
 
 export interface TransformOverlayDetail {
   visible: boolean;
@@ -102,6 +114,7 @@ export class FabricCanvas {
   private lastInteractionType: 'move' | 'resize' | 'rotate' = 'move';
   private historyUnsub: (() => void) | null = null;
   private isDraggingViewport = false;
+  private activeTool: 'select' | 'hand' = 'select';
   private resizeDebounceId: ReturnType<typeof setTimeout> | null = null;
   private blockMousePanUntil = 0;
   private isPinchZooming = false;
@@ -138,8 +151,46 @@ export class FabricCanvas {
     lockRotation: boolean;
   } | null = null;
   private contextMenuCanvasSelection = true;
+  private isSpacePressed = false;
   private readonly onClearLongPress = (): void => {
     this.clearLongPressTimer();
+  };
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.code === 'Space' && !e.repeat) {
+      const target = e.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      this.isSpacePressed = true;
+      if (!this.isDraggingViewport) {
+        this.canvas.defaultCursor = 'grab';
+        this.canvas.hoverCursor = 'grab';
+        this.canvas.requestRenderAll();
+      }
+    }
+  };
+
+  private onKeyUp = (e: KeyboardEvent): void => {
+    if (e.code === 'Space') {
+      this.isSpacePressed = false;
+      if (!this.isDraggingViewport) {
+        this.canvas.defaultCursor = 'default';
+        this.canvas.hoverCursor = 'move';
+        this.canvas.requestRenderAll();
+      }
+    }
+  };
+
+  private onWindowBlur = (): void => {
+    this.isSpacePressed = false;
+    this.endViewportDrag();
   };
 
   private static readonly LONG_PRESS_MS = 450;
@@ -181,9 +232,9 @@ export class FabricCanvas {
 
     this.canvas.on('object:added', (e) => this.onObjectAdded(e.target));
     this.manager.subscribe(() => this.onManagerChange());
-    this.canvas.on('selection:created', (e) => this.onCanvasSelection(e.selected?.[0]));
-    this.canvas.on('selection:updated', (e) => this.onCanvasSelection(e.selected?.[0]));
-    this.canvas.on('selection:cleared', () => this.onCanvasSelection(undefined));
+    this.canvas.on('selection:created', (e) => this.onCanvasSelection(e));
+    this.canvas.on('selection:updated', (e) => this.onCanvasSelection(e));
+    this.canvas.on('selection:cleared', () => this.onCanvasSelection());
     this.canvas.on('mouse:dblclick', (e) => {
       const target = e.target;
       if (target && !isBedObject(target)) {
@@ -243,6 +294,9 @@ export class FabricCanvas {
       window.visualViewport.addEventListener('resize', this.onVisualViewportResize);
     }
     window.addEventListener('orientationchange', this.onOrientationChange);
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onWindowBlur);
     this.scheduleBootViewportFit();
   }
 
@@ -327,10 +381,31 @@ export class FabricCanvas {
     this.canvas.requestRenderAll();
   }
 
-  /** Scroll wheel zoom toward cursor (matches footer hint). */
+  /** Scroll wheel zoom toward cursor or trackpad two-finger pan. */
   private bindWheelZoom(): void {
     this.canvas.on('mouse:wheel', (opt) => {
       const e = opt.e;
+
+      // Trackpad two-finger pan sends horizontal scroll (deltaX) or shiftKey
+      const isPinch = e.ctrlKey;
+      const isHorizontalScroll = Math.abs(e.deltaX) > 0;
+
+      if (!isPinch && (isHorizontalScroll || e.shiftKey)) {
+        const vpt = this.canvas.viewportTransform;
+        if (vpt) {
+          const dx = e.shiftKey ? e.deltaY : e.deltaX;
+          const dy = e.shiftKey ? 0 : e.deltaY;
+          vpt[4] -= dx;
+          vpt[5] -= dy;
+          this.canvas.setViewportTransform(vpt);
+          this.clampViewportTransform();
+          this.canvas.requestRenderAll();
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
       const delta = e.deltaY;
       let zoom = this.canvas.getZoom();
       zoom *= 0.999 ** delta;
@@ -341,7 +416,7 @@ export class FabricCanvas {
       e.stopPropagation();
       this.canvas.requestRenderAll();
     });
-  };
+  }
 
   /**
    * Click+drag panning on blank canvas space (no modifier keys).
@@ -427,7 +502,7 @@ export class FabricCanvas {
 
   private canOpenObjectContextMenu(target?: FabricObject): target is FabricObject {
     if (!target || isBedObject(target)) return false;
-    if (target.type === 'activeSelection') return false;
+    if (isActiveSelection(target)) return true;
     return Boolean(this.manager.findByFabric(target));
   }
 
@@ -444,11 +519,15 @@ export class FabricCanvas {
   ): void {
     if (kind === 'object') {
       if (!this.canOpenObjectContextMenu(target)) return;
-      const scene = this.manager.findByFabric(target);
-      if (scene) {
-        this.manager.selectObject(scene.id);
-        this.canvas.setActiveObject(target);
-        this.canvas.requestRenderAll();
+      if (isActiveSelection(target)) {
+        // Multi-selection is already active on canvas; keep it intact
+      } else if (target) {
+        const scene = this.manager.findByFabric(target);
+        if (scene) {
+          this.manager.selectObject(scene.id);
+          this.canvas.setActiveObject(target);
+          this.canvas.requestRenderAll();
+        }
       }
     } else {
       if (!this.isEmptyCanvasTarget(target)) return;
@@ -686,25 +765,49 @@ export class FabricCanvas {
   private endViewportDrag(): void {
     if (!this.isDraggingViewport) return;
     this.isDraggingViewport = false;
-    this.canvas.selection = true;
-    this.canvas.defaultCursor = 'default';
+    this.canvas.selection = this.activeTool === 'select';
+    const isHand = this.activeTool === 'hand' || this.isSpacePressed;
+    this.canvas.defaultCursor = isHand ? 'grab' : 'default';
+    this.canvas.hoverCursor = isHand ? 'grab' : 'move';
     this.ensureBedVisible();
     this.canvas.requestRenderAll();
   }
 
+  private isPanTrigger(evt: TPointerEvent): boolean {
+    if (!('button' in evt)) return false;
+    const me = evt as MouseEvent;
+    // Middle click (wheel click)
+    if (me.button === 1) return true;
+    // Left click with Spacebar held, Alt held, or Hand tool active
+    if (me.button === 0 && (this.isSpacePressed || me.altKey || this.activeTool === 'hand')) return true;
+    return false;
+  }
+
   private bindDragPan(): void {
     this.canvas.on('mouse:down', (opt) => {
-      if (opt.target) return;
-      if (!this.canStartViewportPan(opt.e)) return;
-      const pt = this.pointerClientXY(opt.e);
-      if (!pt) return;
+      const isPan = this.isPanTrigger(opt.e);
+      if (isPan) {
+        if ('button' in opt.e && (opt.e as MouseEvent).button === 1) {
+          opt.e.preventDefault();
+        }
+        if (!this.canStartViewportPan(opt.e)) return;
+        const pt = this.pointerClientXY(opt.e);
+        if (!pt) return;
 
-      this.isDraggingViewport = true;
-      this.lastPanClientX = pt.x;
-      this.lastPanClientY = pt.y;
-      this.canvas.selection = false;
-      this.canvas.defaultCursor = 'grabbing';
-      this.canvas.requestRenderAll();
+        this.isDraggingViewport = true;
+        this.lastPanClientX = pt.x;
+        this.lastPanClientY = pt.y;
+        this.canvas.selection = false;
+        this.canvas.defaultCursor = 'grabbing';
+        this.canvas.hoverCursor = 'grabbing';
+        this.canvas.requestRenderAll();
+        return;
+      }
+
+      // Plain left click: ensure canvas.selection is true for area marquee selection (only in select mode)
+      if (!opt.target && this.activeTool === 'select') {
+        this.canvas.selection = true;
+      }
     });
 
     this.canvas.on('mouse:move', (opt) => {
@@ -816,7 +919,7 @@ export class FabricCanvas {
   }
 
   private onInteractionBegin(target?: FabricObject): void {
-    if (!target || isBedObject(target) || target.type === 'activeSelection') return;
+    if (!target || isBedObject(target) || isActiveSelection(target)) return;
     this.interactionSnapshot = buildFabricTransformState(target);
   }
 
@@ -1038,6 +1141,22 @@ export class FabricCanvas {
     return globalHistory.getState();
   }
 
+  setTool(tool: 'select' | 'hand'): void {
+    this.activeTool = tool;
+    this.canvas.selection = tool === 'select';
+    this.canvas.defaultCursor = tool === 'hand' ? 'grab' : 'default';
+    this.canvas.hoverCursor = tool === 'hand' ? 'grab' : 'move';
+    if (tool === 'hand') {
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
+    }
+    this.canvas.requestRenderAll();
+  }
+
+  getTool(): 'select' | 'hand' {
+    return this.activeTool;
+  }
+
   runAutoNesting(gap: number): { ok: boolean; reason?: string; placed?: number } {
     const result = this.manager.runAutoNesting(gap, this.workArea);
     if (result.ok) this.canvas.requestRenderAll();
@@ -1066,16 +1185,18 @@ export class FabricCanvas {
     };
   }
 
-  private onCanvasSelection(target?: FabricObject): void {
+  private onCanvasSelection(e?: { selected?: FabricObject[]; target?: FabricObject }): void {
     if (this.syncingSelection) return;
-    if (!target || isBedObject(target)) {
+    const active = this.canvas.getActiveObject();
+    if (!active || isBedObject(active)) {
       this.manager.selectObject(null);
       return;
     }
-    if (target.type === 'activeSelection') {
+    if (isActiveSelection(active) || (e?.selected && e.selected.length > 1)) {
       this.manager.selectObject(null);
       return;
     }
+    const target = e?.selected?.[0] ?? e?.target ?? active;
     const scene = this.manager.findByFabric(target);
     this.manager.selectObject(scene?.id ?? null);
   }
@@ -1084,6 +1205,11 @@ export class FabricCanvas {
     if (this.syncingSelection) return;
     const id = this.manager.selectedObjectId;
     if (!id) {
+      const active = this.canvas.getActiveObject();
+      if (active && isActiveSelection(active)) {
+        this.canvas.requestRenderAll();
+        return;
+      }
       this.canvas.discardActiveObject();
       this.canvas.requestRenderAll();
       return;
@@ -1108,7 +1234,7 @@ export class FabricCanvas {
 
   private onObjectAdded(target?: FabricObject): void {
     if (!target || isBedObject(target)) return;
-    if (target.type === 'activeSelection') return;
+    if (isActiveSelection(target)) return;
     stripActionControls(target);
   }
 
@@ -1129,7 +1255,7 @@ export class FabricCanvas {
   private onObjectTransformDuring(target?: FabricObject): void {
     if (!target || !this.shouldClamp()) return;
     if (isBedObject(target)) return;
-    if (target.type === 'activeSelection') return;
+    if (isActiveSelection(target)) return;
     this.clampObjectInMargins(target);
   }
 
@@ -1185,8 +1311,13 @@ export class FabricCanvas {
     await this.withoutHistoryAsync(async () => {
       const baseName = fileName.replace(new RegExp(`\\.${ext}$`, 'i'), '') || 'layout';
       const name = `${baseName}.${ext}`;
+      if (ext === 'dxf') {
+        (grouped as any).isDxf = true;
+        grouped.set('isDxf' as never, true as never);
+      }
 
       prepareLayoutObject(grouped);
+
       if (this.shouldClamp()) {
         this.clampObjectInMargins(grouped);
       }
@@ -1281,75 +1412,109 @@ export class FabricCanvas {
   }
 
   /**
-   * Explode the selected Fabric Group one level: each child becomes its own scene object
-   * (nested Groups stay as subgroups; paths become standalone loops).
+   * Explode the selected Fabric Group or compound Path: each child/loop becomes its own scene object
+   * (nested Groups stay as subgroups; compound paths become standalone chain loops).
    */
   async explodeSelectedGroup(): Promise<boolean> {
     const active = this.canvas.getActiveObject();
-    if (!(active instanceof Group) || isBedObject(active)) {
+    if (!active || isActiveSelection(active) || isBedObject(active)) {
       return false;
     }
 
-    const children = active.getObjects();
-    if (children.length < 2 && !active.get(NC7_TRACED_COLLECTION_KEY)) {
-      // Single-child groups still explode so users can free the inner path/group.
+    const isGrp = active instanceof Group;
+    const isCompound = active instanceof Path && canSplitCompoundPath(active);
+    if (!isGrp && !isCompound) {
+      return false;
+    }
+
+    if (isGrp) {
+      const children = (active as Group).getObjects();
       if (children.length === 0) return false;
     }
 
     const scene = this.manager.findByFabric(active);
     const baseName = (scene?.name ?? 'group').replace(/\.(svg|dxf)$/i, '');
     const wasTraced = !!active.get(NC7_TRACED_COLLECTION_KEY);
+    const wasDxf = !!(active as any).isDxf || (active as any).get?.('isDxf') === true;
 
     await this.withoutHistoryAsync(async () => {
-      if (scene) {
-        this.manager.removeObject(scene.id);
-      }
-      this.canvas.discardActiveObject();
-      this.canvas.remove(active);
-
-      // removeAll() exits children into canvas space with group transform applied.
-      const parts = active.removeAll();
-      active.destroy();
-
-      const added: FabricObject[] = [];
-      for (let i = 0; i < parts.length; i += 1) {
-        const part = parts[i];
-        part.set({
-          [NC7_TRACED_COLLECTION_KEY]: false,
-          selectable: true,
-          evented: true,
-          objectCaching: false,
-        });
-        if (wasTraced) {
-          applyVectorizerEngineeringStyle(part);
+      this.syncingSelection = true;
+      try {
+        if (scene) {
+          this.manager.removeObject(scene.id);
         }
-        stripActionControls(part);
-        syncImportedGroupSelectionBounds(part);
-        this.canvas.add(part);
+        this.canvas.discardActiveObject();
+        this.canvas.remove(active);
 
-        const id = this.manager.newId();
-        const partName =
-          parts.length === 1
-            ? `${baseName}.svg`
-            : part instanceof Group
-              ? `${baseName}-group-${i + 1}.svg`
-              : `${baseName}-part-${i + 1}.svg`;
-        const entry: SceneObject = { id, name: partName, fabricRef: part };
-        this.manager.addObject(entry);
-        this.recordAdd(entry);
-        added.push(part);
-      }
-
-      if (added.length === 1) {
-        const only = this.manager.findByFabric(added[0]);
-        if (only) {
-          this.manager.selectObject(only.id);
-          this.canvas.setActiveObject(added[0]);
+        let rawParts: FabricObject[] = [];
+        if (isGrp) {
+          // removeAll() exits children into canvas space with group transform applied.
+          rawParts = (active as Group).removeAll();
+          active.dispose?.();
+        } else {
+          rawParts = [active];
+          active.dispose?.();
         }
-      } else if (added.length > 1) {
-        const selection = new ActiveSelection(added, { canvas: this.canvas });
-        this.canvas.setActiveObject(selection);
-        this.manager.selectObject(null);
+
+        // Expand any compound paths into individual subpath chain loops
+        const parts: FabricObject[] = [];
+        for (const raw of rawParts) {
+          if (raw instanceof Path && canSplitCompoundPath(raw)) {
+            parts.push(...splitCompoundPath(raw));
+          } else {
+            parts.push(raw);
+          }
+        }
+
+        const added: FabricObject[] = [];
+        for (let i = 0; i < parts.length; i += 1) {
+          const part = parts[i];
+          part.set({
+            [NC7_TRACED_COLLECTION_KEY]: false,
+            selectable: true,
+            evented: true,
+            objectCaching: false,
+          });
+          if (wasDxf) {
+            (part as any).isDxf = true;
+            part.set('isDxf' as never, true as never);
+          } else if (wasTraced) {
+            applyVectorizerEngineeringStyle(part);
+          } else {
+            // Apply standard stroke-only layout style to ensure visible theme stroke
+            applyStrokeOnlyLayoutStyle(part);
+          }
+          stripActionControls(part);
+          normalizeFabricObjectToCncFrame(part);
+          part.setCoords();
+          this.canvas.add(part);
+
+          const id = this.manager.newId();
+          const ext = wasDxf ? 'dxf' : 'svg';
+          const partName =
+            parts.length === 1
+              ? `${baseName}.${ext}`
+              : part instanceof Group
+                ? `${baseName}-group-${i + 1}.${ext}`
+                : `${baseName}-part-${i + 1}.${ext}`;
+          const entry: SceneObject = { id, name: partName, fabricRef: part };
+          this.manager.addObject(entry);
+          this.recordAdd(entry);
+          added.push(part);
+        }
+
+        if (added.length >= 1) {
+          // Select only the first exploded object so every object is individual and independently selectable
+          const first = this.manager.findByFabric(added[0]);
+          if (first) {
+            this.manager.selectObject(first.id);
+            this.canvas.setActiveObject(added[0]);
+          } else {
+            this.canvas.discardActiveObject();
+          }
+        }
+      } finally {
+        this.syncingSelection = false;
       }
 
       this.canvas.requestRenderAll();
@@ -1359,11 +1524,108 @@ export class FabricCanvas {
     return true;
   }
 
-  /** True when the active selection is an explodable group (2+ children, or any Group). */
+  /** Group multiple selected objects (ActiveSelection) into a single permanent Fabric Group. */
+  async groupSelectedObjects(): Promise<boolean> {
+    const active = this.canvas.getActiveObject();
+    if (!active || !(active instanceof ActiveSelection) || isBedObject(active)) {
+      return false;
+    }
+
+    const objects = [...active.getObjects()];
+    if (objects.length < 2) return false;
+
+    await this.withoutHistoryAsync(async () => {
+      this.syncingSelection = true;
+      try {
+        // 1. Remove individual objects from scene manager
+        for (const obj of objects) {
+          const scene = this.manager.findByFabric(obj);
+          if (scene) {
+            this.manager.removeObject(scene.id);
+          }
+        }
+
+        // 2. Discard selection and remove objects from canvas
+        this.canvas.discardActiveObject();
+        for (const obj of objects) {
+          this.canvas.remove(obj);
+        }
+
+        // 3. Create permanent Group
+        const group = new Group(objects, {
+          interactive: true,
+          subTargetCheck: false,
+        });
+        prepareLayoutObject(group);
+        stripActionControls(group);
+        group.setCoords();
+        this.canvas.add(group);
+
+        const id = this.manager.newId();
+        const entry: SceneObject = { id, name: `group-${id.slice(0, 5)}.svg`, fabricRef: group };
+        this.manager.addObject(entry);
+        this.recordAdd(entry);
+        this.manager.selectObject(id);
+        this.canvas.setActiveObject(group);
+      } finally {
+        this.syncingSelection = false;
+      }
+      this.canvas.requestRenderAll();
+    });
+
+    markDocumentChanged();
+    return true;
+  }
+
+  /** True when multiple objects are selected in an ActiveSelection. */
+  selectMultipleObjects(objects: FabricObject[]): void {
+    if (objects.length === 0) {
+      this.manager.selectObject(null);
+      this.canvas.discardActiveObject();
+    } else if (objects.length === 1) {
+      const scene = this.manager.findByFabric(objects[0]);
+      this.manager.selectObject(scene?.id ?? null);
+      this.canvas.setActiveObject(objects[0]);
+    } else {
+      this.syncingSelection = true;
+      const sel = new ActiveSelection([], { canvas: this.canvas });
+      sel.multiSelectAdd(...objects);
+      sel.setCoords();
+      this.canvas.setActiveObject(sel);
+      this.manager.selectObject(null);
+      this.syncingSelection = false;
+    }
+    this.canvas.requestRenderAll();
+  }
+
+  canGroupSelectedObjects(): boolean {
+    const active = this.canvas.getActiveObject();
+    return isActiveSelection(active) && !isBedObject(active) && active.getObjects().length >= 2;
+  }
+
+  /** Ungroup is an alias for explodeSelectedGroup. */
+  async ungroupSelectedGroup(): Promise<boolean> {
+    return this.explodeSelectedGroup();
+  }
+
+  /** True when the active selection is an ungroupable group. */
+  canUngroupSelectedGroup(): boolean {
+    return this.canExplodeSelectedGroup();
+  }
+
+  /** True when the active selection is an explodable group or compound path. */
   canExplodeSelectedGroup(): boolean {
     const active = this.canvas.getActiveObject();
-    return active instanceof Group && !isBedObject(active) && active.getObjects().length >= 1;
+    if (!active || isActiveSelection(active) || isBedObject(active)) return false;
+    if (active instanceof Group) {
+      return active.getObjects().length >= 1;
+    }
+    if (active instanceof Path) {
+      return canSplitCompoundPath(active);
+    }
+    return false;
   }
+
 
   async loadDemoSvg(): Promise<void> {
     await this.loadDummyAbcSvg();
@@ -1684,7 +1946,7 @@ export class FabricCanvas {
     }
 
     const active = this.canvas.getActiveObject();
-    if (!active || isBedObject(active) || active.type === 'activeSelection') return;
+    if (!active || isBedObject(active) || isActiveSelection(active)) return;
 
     this.contextMenuCanvasSelection = this.canvas.selection ?? true;
     this.contextMenuLockTarget = active;
@@ -1718,8 +1980,8 @@ export class FabricCanvas {
   getActiveObjectName(): string | null {
     const active = this.canvas.getActiveObject();
     if (active && !isBedObject(active)) {
-      if (active.type === 'activeSelection') {
-        const selection = active as ActiveSelection;
+      if (isActiveSelection(active)) {
+        const selection = active;
         const items = selection.getObjects();
         if (items.length === 0) return null;
         const firstName = items[0].get('sceneName') as string | undefined;
@@ -1755,6 +2017,9 @@ export class FabricCanvas {
     this.bootViewportTimers = [];
     window.removeEventListener('orientationchange', this.onOrientationChange);
     window.removeEventListener('resize', this.onWindowResize);
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onWindowBlur);
     window.removeEventListener('pointerup', this.onEndViewportPan);
     window.removeEventListener('pointercancel', this.onEndViewportPan);
     window.removeEventListener('blur', this.onEndViewportPan);

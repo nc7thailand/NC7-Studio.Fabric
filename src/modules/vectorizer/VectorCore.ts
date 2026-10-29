@@ -18,6 +18,7 @@ export interface VectorJob {
 export interface VectorCoreConfig {
   threshold: number;
   turdSize: number;
+  invert?: boolean;
 }
 
 export interface TraceImageResult {
@@ -27,6 +28,7 @@ export interface TraceImageResult {
   summary: string;
   /** SVG string when trace succeeds — wired to F-50 import handoff. */
   svgText?: string;
+  pathCount?: number;
 }
 
 export type TraceProgressCallback = (message: string) => void;
@@ -51,6 +53,7 @@ const DEFAULT_POTRACE_OPTIONS = {
 const DEFAULT_CONFIG: VectorCoreConfig = {
   threshold: 128,
   turdSize: 2,
+  invert: false,
 };
 
 /** Progressive max edge lengths — retry smaller on wasm heap failures. */
@@ -122,7 +125,8 @@ async function decodeImage(file: File): Promise<HTMLImageElement> {
 function rasterToBinarizedImageData(
   img: HTMLImageElement,
   maxDim: number,
-  threshold: number
+  threshold: number,
+  invert = false
 ): { imageData: ImageData; width: number; height: number } {
   const srcW = img.naturalWidth || img.width;
   const srcH = img.naturalHeight || img.height;
@@ -143,7 +147,9 @@ function rasterToBinarizedImageData(
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const v = lum >= threshold ? 255 : 0;
+    const isWhite = lum >= threshold;
+    // Potrace traces black (0) as foreground contours, white (255) as background.
+    const v = invert ? (isWhite ? 0 : 255) : (isWhite ? 255 : 0);
     data[i] = v;
     data[i + 1] = v;
     data[i + 2] = v;
@@ -264,7 +270,8 @@ export class VectorCore {
         const { imageData, width, height } = rasterToBinarizedImageData(
           img,
           maxDim,
-          this.config.threshold
+          this.config.threshold,
+          Boolean(this.config.invert)
         );
         usedW = width;
         usedH = height;
@@ -305,7 +312,7 @@ export class VectorCore {
       svgText = toStrokeOnlySvg(svgText);
 
       job.status = 'done';
-      const summary = `Done — ${pathCount} outline path${pathCount === 1 ? '' : 's'} from ${file.name} (${usedW}×${usedH}px). Imported to canvas.`;
+      const summary = `Ready — ${pathCount} outline path${pathCount === 1 ? '' : 's'} from ${file.name} (${usedW}×${usedH}px).`;
       job.message = summary;
 
       return {
@@ -313,6 +320,7 @@ export class VectorCore {
         job,
         summary,
         svgText,
+        pathCount,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

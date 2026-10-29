@@ -486,7 +486,7 @@ export function prepareLayoutObject(obj: FabricObject): void {
 }
 
 /** Transparent fill + palette stroke on object and nested children (no re-normalize). */
-function applyStrokeOnlyLayoutStyle(obj: FabricObject): void {
+export function applyStrokeOnlyLayoutStyle(obj: FabricObject): void {
   const palette = canvasPalette.getState();
   obj.set({
     stroke: palette.objectStroke,

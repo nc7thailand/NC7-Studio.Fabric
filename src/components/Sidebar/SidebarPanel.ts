@@ -217,10 +217,25 @@ export interface VectorizerPanelState {
   message: string | null;
   status: VectorizerPanelStatus;
   config: VectorCoreConfig;
+  previewImageSrc?: string | null;
+  previewSvgText?: string | null;
+  fileName?: string | null;
+  pathCount?: number;
+  imageDimensions?: { width: number; height: number } | null;
 }
 
 export function renderVectorizerPanel(state: VectorizerPanelState): string {
-  const { message, status, config } = state;
+  const {
+    message,
+    status,
+    config,
+    previewImageSrc,
+    previewSvgText,
+    fileName,
+    pathCount,
+    imageDimensions,
+  } = state;
+
   const statusClass =
     status === 'processing'
       ? 'is-processing'
@@ -231,45 +246,177 @@ export function renderVectorizerPanel(state: VectorizerPanelState): string {
           : message
             ? ''
             : 'is-empty';
+
+  const statusPillText =
+    status === 'processing'
+      ? 'Tracing…'
+      : status === 'done'
+        ? 'Vector Ready'
+        : status === 'error'
+          ? 'Trace Failed'
+          : 'Ready';
+
   const displayMessage =
     message ??
-    (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
+    (status === 'processing'
+      ? 'Tracing image…'
+      : previewSvgText
+        ? 'Review preview and click Apply to Foam Bed.'
+        : 'Choose a PNG, JPG, or WebP to trace.');
+
+  const canApply = Boolean(previewSvgText && status !== 'processing');
 
   return `
     <div class="panel-sidebar vectorizer-panel-host">
-      <div class="sidebar-header">
-        <h1 class="logo-text">Trace <span class="logo-accent">Image</span></h1>
-        <span class="version-tag">Bitmap · potrace WASM</span>
+      <div class="sidebar-header vectorizer-header">
+        <div>
+          <h1 class="logo-text">Trace <span class="logo-accent">Image</span></h1>
+          <span class="version-tag">Bitmap · potrace WASM</span>
+        </div>
+        <div class="vectorizer-header-actions">
+          <span class="vectorizer-status-pill ${statusClass}">${statusPillText}</span>
+        </div>
       </div>
-      <div class="sidebar-content">
-        <p class="section-hint">
-          Upload a raster image — potrace WASM traces paths and imports SVG to the foam bed.
-        </p>
-        <div class="input-grid">
-          <div class="input-group">
-            <label for="trace-threshold">Binarize threshold</label>
-            <div class="input-wrapper">
-              <input id="trace-threshold" type="range" min="10" max="240" step="1" value="${config.threshold}" ${status === 'processing' ? 'disabled' : ''} />
-              <span class="unit-label" id="trace-threshold-value">${config.threshold}</span>
+
+      <div class="vectorizer-body">
+        <div class="vectorizer-controls-pane">
+          ${
+            !previewImageSrc
+              ? `
+            <div class="upload-zone" id="trace-upload-zone">
+              <label for="trace-image-upload" class="upload-label ${status === 'processing' ? 'is-disabled' : ''}">
+                ${icons.upload}
+                <span class="upload-title">Choose image (PNG, JPG, WebP)</span>
+                <span class="upload-desc">${status === 'processing' ? 'Tracing in progress…' : 'Drop file here or click to browse'}</span>
+              </label>
+              <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
+            </div>
+          `
+              : `
+            <div class="vectorizer-file-info-card">
+              <div class="vectorizer-file-info-main">
+                <span class="vectorizer-file-name" title="${fileName ?? 'Image'}">${fileName ?? 'Image'}</span>
+                <span class="vectorizer-file-meta">${imageDimensions ? `${imageDimensions.width}×${imageDimensions.height} px` : ''}</span>
+              </div>
+              <label for="trace-image-upload" class="vectorizer-btn-secondary" title="Choose another image">
+                Change
+                <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
+              </label>
+            </div>
+          `
+          }
+
+          <div class="vectorizer-settings-group">
+            <div class="input-group">
+              <div class="input-group-header">
+                <label for="trace-threshold">Binarize threshold</label>
+                <div class="threshold-pill-wrap">
+                  <input id="trace-threshold-number" type="number" min="10" max="240" step="1" value="${config.threshold}" class="threshold-num-input" aria-label="Threshold value" />
+                </div>
+              </div>
+              <div class="input-wrapper">
+                <input id="trace-threshold" type="range" min="10" max="240" step="1" value="${config.threshold}" class="threshold-slider" />
+              </div>
+              <span class="input-subhint">Lower = darker contours · Higher = fine details</span>
+            </div>
+
+            <div class="input-group">
+              <div class="input-group-header">
+                <label for="trace-turdsize">Turd size (despeckle)</label>
+                <span class="unit-label-badge" id="trace-turdsize-value">${config.turdSize} px</span>
+              </div>
+              <div class="input-wrapper">
+                <input id="trace-turdsize" type="number" min="0" max="50" step="1" value="${config.turdSize}" />
+              </div>
+              <span class="input-subhint">Ignore speckles / noise smaller than this pixel area</span>
+            </div>
+
+            <div class="input-group input-group--checkbox">
+              <label class="checkbox-label" for="trace-invert">
+                <input id="trace-invert" type="checkbox" ${config.invert ? 'checked' : ''} />
+                <span>Invert colors (white on black)</span>
+              </label>
             </div>
           </div>
-          <div class="input-group">
-            <label for="trace-turdsize">Turd size (despeckle)</label>
-            <div class="input-wrapper">
-              <input id="trace-turdsize" type="number" min="0" max="50" step="1" value="${config.turdSize}" ${status === 'processing' ? 'disabled' : ''} />
-            </div>
+
+          <div class="vectorizer-actions-group">
+            <button type="button" id="btn-trace-apply" class="vectorizer-btn-apply" ${!canApply ? 'disabled' : ''}>
+              ${icons.check}
+              <span>Apply to Foam Bed</span>
+            </button>
+            ${
+              previewImageSrc
+                ? `
+              <button type="button" id="btn-trace-clear" class="vectorizer-btn-clear" ${status === 'processing' ? 'disabled' : ''}>
+                Discard &amp; Clear
+              </button>
+            `
+                : ''
+            }
+          </div>
+
+          <div id="vectorizer-result" class="vectorizer-result ${statusClass}" role="status" aria-live="polite">
+            ${displayMessage}
           </div>
         </div>
-        <div class="upload-zone">
-          <label for="trace-image-upload" class="upload-label ${status === 'processing' ? 'is-disabled' : ''}">
-            ${icons.upload}
-            <span class="upload-title">Choose image (PNG, JPG)</span>
-            <span class="upload-desc">${status === 'processing' ? 'Tracing in progress…' : 'Bitmap → SVG import'}</span>
-          </label>
-          <input id="trace-image-upload" type="file" accept="image/png,image/jpeg,image/jpg,image/webp" class="hidden-file-input" ${status === 'processing' ? 'disabled' : ''} />
-        </div>
-        <div id="vectorizer-result" class="vectorizer-result ${statusClass}" role="status" aria-live="polite">
-          ${displayMessage}
+
+        <div class="vectorizer-preview-pane">
+          <div class="vectorizer-preview-grid">
+            <div class="preview-card preview-card--before">
+              <div class="preview-card-header">
+                <span class="preview-card-title">Before (Original)</span>
+                ${fileName ? `<span class="preview-card-badge" title="${fileName}">${fileName}</span>` : ''}
+              </div>
+              <div class="preview-card-body preview-card-body--checkered">
+                ${
+                  previewImageSrc
+                    ? `
+                  <img src="${previewImageSrc}" alt="Original bitmap preview" class="preview-image" />
+                `
+                    : `
+                  <div class="preview-placeholder">
+                    <span class="preview-placeholder-icon">${icons.upload}</span>
+                    <span class="preview-placeholder-text">Choose or drop an image to preview</span>
+                  </div>
+                `
+                }
+              </div>
+            </div>
+
+            <div class="preview-card preview-card--after">
+              <div class="preview-card-header">
+                <span class="preview-card-title">After (Vector Outline)</span>
+                ${
+                  pathCount != null && pathCount > 0
+                    ? `<span class="preview-card-badge preview-card-badge--success">${pathCount} path${pathCount === 1 ? '' : 's'}</span>`
+                    : ''
+                }
+              </div>
+              <div class="preview-card-body preview-card-body--vector">
+                ${
+                  previewSvgText
+                    ? `
+                  <div class="preview-svg-container" id="preview-svg-mount">${previewSvgText}</div>
+                `
+                    : `
+                  <div class="preview-placeholder">
+                    <span class="preview-placeholder-text">${status === 'processing' ? 'Tracing contours…' : 'Traced vector will appear here'}</span>
+                  </div>
+                `
+                }
+                ${
+                  status === 'processing'
+                    ? `
+                  <div class="preview-loading-overlay">
+                    <div class="preview-spinner"></div>
+                    <span class="preview-loading-text">Tracing contours with potrace WASM…</span>
+                  </div>
+                `
+                    : ''
+                }
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

@@ -60,6 +60,15 @@ export interface CanvasViewportHandle {
   ungroupTracedCollection: () => Promise<boolean>;
   explodeSelectedGroup: () => Promise<boolean>;
   canExplodeSelectedGroup: () => boolean;
+  groupSelectedObjects: () => Promise<boolean>;
+  canGroupSelectedObjects: () => boolean;
+  ungroupSelectedGroup: () => Promise<boolean>;
+  canUngroupSelectedGroup: () => boolean;
+  selectMultipleObjects: (objects: FabricObject[]) => void;
+  setTool: (tool: 'select' | 'hand') => void;
+  getTool: () => 'select' | 'hand';
+
+
   onSceneChange: (cb: () => void) => void;
   onHistoryChange: (cb: (state: HistoryState) => void) => void;
   onTransformOverlay: (cb: (detail: TransformOverlayDetail | null) => void) => void;
@@ -188,6 +197,15 @@ export function mountCanvasViewport(
     ungroupTracedCollection: () => fabric.ungroupTracedCollection(),
     explodeSelectedGroup: () => fabric.explodeSelectedGroup(),
     canExplodeSelectedGroup: () => fabric.canExplodeSelectedGroup(),
+    groupSelectedObjects: () => fabric.groupSelectedObjects(),
+    canGroupSelectedObjects: () => fabric.canGroupSelectedObjects(),
+    ungroupSelectedGroup: () => fabric.ungroupSelectedGroup(),
+    canUngroupSelectedGroup: () => fabric.canUngroupSelectedGroup(),
+    selectMultipleObjects: (objects) => fabric.selectMultipleObjects(objects),
+    setTool: (tool) => fabric.setTool(tool),
+    getTool: () => fabric.getTool(),
+
+
     onSceneChange: (cb) => {
       sceneCallbacks.push(cb);
     },

@@ -12,6 +12,7 @@ import {
   classifyPathCncType,
   normalizeFabricObjectToCncFrame,
 } from '../svg/pathCncGeometry';
+import { parseAndTransformEntity } from './dxfPlaneTransform';
 
 type PathCommand = (string | number)[];
 
@@ -107,146 +108,149 @@ function sampleBulge(
   return pts;
 }
 
-function lineEntityToPath(entity: ILineEntity): Path | null {
-  const a = entity.vertices?.[0];
-  const b = entity.vertices?.[1];
-  if (!a || !b) return null;
-  return pointPath([
-    ['M', num(a.x), num(a.y)],
-    ['L', num(b.x), num(b.y)],
-  ]);
-}
+function rawCommandsForEntity(entity: IEntity): PathCommand[] | null {
+  const transformed = parseAndTransformEntity(entity);
+  const pts = transformed.transformedPoints;
 
-function lwpolylineToPath(entity: ILwpolylineEntity): Path | null {
-  const verts = entity.vertices ?? [];
-  if (verts.length < 2) return null;
-  const commands: PathCommand[] = [];
-  for (let i = 0; i < verts.length; i += 1) {
-    const v = verts[i];
-    const x = num(v.x);
-    const y = num(v.y);
-    if (i === 0) {
-      commands.push(['M', x, y]);
-    } else {
-      const prev = verts[i - 1];
-      const bulge = num(prev.bulge);
-      if (bulge) {
-        for (const p of sampleBulge(num(prev.x), num(prev.y), x, y, bulge)) {
+  switch (entity.type) {
+    case 'LINE': {
+      if (pts.length < 2) return null;
+      return [
+        ['M', pts[0].x, pts[0].y],
+        ['L', pts[1].x, pts[1].y],
+      ];
+    }
+
+    case 'LWPOLYLINE': {
+      const poly = entity as ILwpolylineEntity;
+      const verts = poly.vertices ?? [];
+      if (verts.length < 2 || pts.length < 2) return null;
+
+      const commands: PathCommand[] = [];
+      for (let i = 0; i < pts.length; i += 1) {
+        const p = pts[i];
+        if (i === 0) {
+          commands.push(['M', p.x, p.y]);
+        } else {
+          const prevVert = verts[i - 1];
+          const prevPt = pts[i - 1];
+          const bulge = num(prevVert?.bulge);
+          if (bulge) {
+            for (const bp of sampleBulge(prevPt.x, prevPt.y, p.x, p.y, bulge)) {
+              commands.push(['L', bp.x, bp.y]);
+            }
+          }
           commands.push(['L', p.x, p.y]);
         }
       }
-      commands.push(['L', x, y]);
-    }
-  }
-  if (entity.shape && verts.length > 2) {
-    const first = verts[0];
-    const last = verts[verts.length - 1];
-    const bulge = num(last.bulge);
-    if (bulge) {
-      for (const p of sampleBulge(num(last.x), num(last.y), num(first.x), num(first.y), bulge)) {
-        commands.push(['L', p.x, p.y]);
+      if (poly.shape && pts.length > 2) {
+        const firstPt = pts[0];
+        const lastPt = pts[pts.length - 1];
+        const lastVert = verts[verts.length - 1];
+        const bulge = num(lastVert?.bulge);
+        if (bulge) {
+          for (const bp of sampleBulge(lastPt.x, lastPt.y, firstPt.x, firstPt.y, bulge)) {
+            commands.push(['L', bp.x, bp.y]);
+          }
+        }
+        commands.push(['Z']);
       }
+      return commands;
     }
-    commands.push(['Z']);
-  }
-  return pointPath(commands);
-}
 
-function polylineToPath(entity: IPolylineEntity): Path | null {
-  const verts = entity.vertices ?? [];
-  if (verts.length < 2) return null;
-  const commands: PathCommand[] = [];
-  verts.forEach((v, i) => {
-    commands.push([i === 0 ? 'M' : 'L', num(v.x), num(v.y)]);
-  });
-  if (entity.shape) commands.push(['Z']);
-  return pointPath(commands);
-}
+    case 'POLYLINE': {
+      const poly = entity as IPolylineEntity;
+      if (pts.length < 2) return null;
+      const commands: PathCommand[] = [];
+      pts.forEach((p, i) => {
+        commands.push([i === 0 ? 'M' : 'L', p.x, p.y]);
+      });
+      if (poly.shape) commands.push(['Z']);
+      return commands;
+    }
 
-function circleToPath(entity: ICircleEntity): Path | null {
-  const c = entity.center;
-  const r = num(entity.radius);
-  if (!c || r <= 0) return null;
-  return pointPath(sampleArc(num(c.x), num(c.y), r, 0, Math.PI * 2, true));
-}
+    case 'CIRCLE': {
+      const circ = entity as ICircleEntity;
+      const centerPt = pts[0];
+      const r = num(circ.radius);
+      if (!centerPt || r <= 0) return null;
+      return sampleArc(centerPt.x, centerPt.y, r, 0, Math.PI * 2, true);
+    }
 
-function arcToPath(entity: IArcEntity): Path | null {
-  const c = entity.center;
-  const r = num(entity.radius);
-  if (!c || r <= 0) return null;
-  // dxf-parser angles are radians.
-  return pointPath(
-    sampleArc(num(c.x), num(c.y), r, num(entity.startAngle), num(entity.endAngle), false)
-  );
-}
+    case 'ARC': {
+      const arc = entity as IArcEntity;
+      const centerPt = pts[0];
+      const r = num(arc.radius);
+      if (!centerPt || r <= 0) return null;
+      return sampleArc(
+        centerPt.x,
+        centerPt.y,
+        r,
+        num(arc.startAngle),
+        num(arc.endAngle),
+        false
+      );
+    }
 
-function entityToPath(entity: IEntity): Path | null {
-  switch (entity.type) {
-    case 'LINE':
-      return lineEntityToPath(entity as ILineEntity);
-    case 'LWPOLYLINE':
-      return lwpolylineToPath(entity as ILwpolylineEntity);
-    case 'POLYLINE':
-      return polylineToPath(entity as IPolylineEntity);
-    case 'CIRCLE':
-      return circleToPath(entity as ICircleEntity);
-    case 'ARC':
-      return arcToPath(entity as IArcEntity);
     default:
       return null;
   }
 }
 
-function collectEntityPoints(obj: FabricObject, out: IPoint[]): void {
-  if (obj instanceof Path && Array.isArray(obj.path)) {
-    for (const cmd of obj.path as PathCommand[]) {
-      const op = String(cmd[0]);
-      if (op === 'M' || op === 'L') {
-        out.push({ x: num(cmd[1]), y: num(cmd[2]), z: 0 });
-      }
-    }
-    return;
-  }
-  if (obj instanceof Group) {
-    for (const child of obj.getObjects()) collectEntityPoints(child, out);
-  }
-}
+/** Transform a block's child entity into world CAD space for an INSERT entity. */
+function transformBlockEntity(
+  entity: any,
+  blockBase: { x?: number; y?: number; z?: number },
+  insertPos: { x?: number; y?: number; z?: number },
+  scale: { x?: number; y?: number },
+  rotationDeg = 0
+): any {
+  const cloned = JSON.parse(JSON.stringify(entity));
+  const sx = scale.x ?? 1;
+  const sy = scale.y ?? 1;
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
 
-/** DXF is Y-up; Fabric canvas is Y-down — flip about the drawing extents. */
-function flipGroupYToFabric(group: Group): void {
-  const pts: IPoint[] = [];
-  collectEntityPoints(group, pts);
-  if (pts.length === 0) return;
-  let maxY = pts[0].y;
-  for (const p of pts) if (p.y > maxY) maxY = p.y;
-
-  const flipPath = (path: Path): void => {
-    const next: PathCommand[] = [];
-    for (const cmd of path.path as PathCommand[]) {
-      const op = String(cmd[0]);
-      if (op === 'M' || op === 'L') {
-        next.push([op, num(cmd[1]), maxY - num(cmd[2])]);
-      } else if (op === 'Z' || op === 'z') {
-        next.push(['Z']);
-      } else {
-        next.push(cmd);
-      }
+  const t = (p: { x?: number; y?: number; z?: number }) => {
+    const bx = ((p.x ?? 0) - (blockBase.x ?? 0)) * sx;
+    const by = ((p.y ?? 0) - (blockBase.y ?? 0)) * sy;
+    if (rotationDeg === 0) {
+      return { x: bx + (insertPos.x ?? 0), y: by + (insertPos.y ?? 0), z: p.z };
     }
-    path.set({ path: next as never });
-    path.setCoords();
+    return {
+      x: bx * cos - by * sin + (insertPos.x ?? 0),
+      y: bx * sin + by * cos + (insertPos.y ?? 0),
+      z: p.z,
+    };
   };
 
-  const walk = (obj: FabricObject): void => {
-    if (obj instanceof Path) flipPath(obj);
-    else if (obj instanceof Group) obj.getObjects().forEach(walk);
-  };
-  walk(group);
-  group.setCoords();
+  if (Array.isArray(cloned.vertices)) {
+    cloned.vertices = cloned.vertices.map((v: any) => {
+      const tp = t(v);
+      return { ...v, ...tp };
+    });
+  }
+  if (cloned.start && cloned.end) {
+    cloned.start = { ...cloned.start, ...t(cloned.start) };
+    cloned.end = { ...cloned.end, ...t(cloned.end) };
+  }
+  if (cloned.center) {
+    const tp = t(cloned.center);
+    cloned.center = { ...cloned.center, ...tp };
+    cloned.radius = (cloned.radius ?? 0) * Math.max(Math.abs(sx), Math.abs(sy));
+    if (rotationDeg !== 0) {
+      if (cloned.startAngle !== undefined) cloned.startAngle += rad;
+      if (cloned.endAngle !== undefined) cloned.endAngle += rad;
+    }
+  }
+  return cloned;
 }
 
 /**
  * Parse ASCII DXF into a Fabric group (LINE / LWPOLYLINE / POLYLINE / ARC / CIRCLE).
- * Coordinates are converted from CAD Y-up into Fabric Y-down.
+ * Resolves INSERT block references, projects planes, flips CAD Y-up into Fabric Y-down,
+ * and frames the geometry cleanly starting at (0, 0).
  */
 export function loadDxfLayoutAsGroup(dxfText: string): Group {
   const parser = new DxfParser();
@@ -255,20 +259,89 @@ export function loadDxfLayoutAsGroup(dxfText: string): Group {
     throw new Error('No entities found in DXF');
   }
 
-  const paths: Path[] = [];
+  // 1. Flatten all entities, expanding INSERT block references
+  const allEntities: IEntity[] = [];
   for (const entity of dxf.entities) {
-    const path = entityToPath(entity);
-    if (path) paths.push(path);
+    if (entity.type === 'INSERT') {
+      const ins = entity as any;
+      const block = dxf.blocks?.[ins.name];
+      if (block?.entities && Array.isArray(block.entities)) {
+        const sx = num(ins.xScale ?? 1);
+        const sy = num(ins.yScale ?? 1);
+        const rot = num(ins.rotation ?? 0);
+        for (const be of block.entities) {
+          allEntities.push(
+            transformBlockEntity(
+              be,
+              block.position ?? { x: 0, y: 0, z: 0 },
+              ins.position ?? { x: 0, y: 0, z: 0 },
+              { x: sx, y: sy },
+              rot
+            )
+          );
+        }
+      }
+    } else {
+      allEntities.push(entity);
+    }
   }
-  if (paths.length === 0) {
+
+  // 2. Extract raw commands and determine drawing extents across all vectors
+  const rawCommandsList: PathCommand[][] = [];
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const entity of allEntities) {
+    const cmds = rawCommandsForEntity(entity);
+    if (cmds && cmds.length >= 2) {
+      rawCommandsList.push(cmds);
+      for (const cmd of cmds) {
+        const op = cmd[0];
+        if (op === 'M' || op === 'L') {
+          const x = num(cmd[1]);
+          const y = num(cmd[2]);
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+  }
+
+  if (rawCommandsList.length === 0 || !Number.isFinite(minX) || !Number.isFinite(maxY)) {
     throw new Error('No supported vector entities (LINE, LWPOLYLINE, POLYLINE, ARC, CIRCLE) in DXF');
   }
 
+  // 3. Flip CAD Y-up to Fabric Y-down and anchor to (0, 0)
+  const paths: Path[] = [];
+  for (const cmds of rawCommandsList) {
+    const flippedCmds: PathCommand[] = cmds.map((cmd) => {
+      const op = cmd[0];
+      if (op === 'M' || op === 'L') {
+        return [op, num(cmd[1]) - minX, maxY - num(cmd[2])];
+      }
+      return cmd;
+    });
+
+    const path = pointPath(flippedCmds);
+    if (path) paths.push(path);
+  }
+
+  if (paths.length === 0) {
+    throw new Error('Failed to create paths from DXF entities');
+  }
+
+  // 4. Create Fabric group tagged with isDxf
   const group = new Group(paths, {
     interactive: true,
     subTargetCheck: false,
   });
-  flipGroupYToFabric(group);
+  (group as any).isDxf = true;
+  group.set('isDxf' as never, true as never);
   group.setCoords();
+
   return group;
 }

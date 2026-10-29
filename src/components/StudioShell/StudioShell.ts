@@ -46,6 +46,9 @@ export class StudioShell {
   private objectPanelFocusSize = false;
   private exportModalOpen = false;
   private exportFormat: LayoutExportFormat = LAYOUT_EXPORT_DEFAULT;
+  private activeToolMode: 'select' | 'hand' = 'select';
+  private stagedTraceFile: File | null = null;
+  private traceDebounceTimer: number | null = null;
   private vectorizerState: VectorizerPanelState = {
     message: null,
     status: 'idle',
@@ -93,7 +96,7 @@ export class StudioShell {
           <div id="setup-panel-host">${renderSetupPanel()}</div>
         </section>
 
-        <section id="Pnl-Vectorizer" class="floating-panel" role="dialog" aria-label="Trace image" hidden>
+        <section id="Pnl-Vectorizer" class="floating-panel floating-panel--vectorizer" role="dialog" aria-label="Trace image" hidden>
           <button type="button" class="panel-close-btn" data-close-panel aria-label="Close">×</button>
           <div id="vectorizer-panel-host">${renderVectorizerPanel(this.vectorizerState)}</div>
         </section>
@@ -133,19 +136,37 @@ export class StudioShell {
                         <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="file" role="menuitem">Files on bed…</button>
                       </div>
                     </div>
+                    <button type="button" class="action-menu-item action-menu-item--history" id="btn-menu-undo" disabled role="menuitem">
+                      <span>Undo</span>
+                      <span class="action-menu-shortcut">Cmd+Z</span>
+                    </button>
+                    <button type="button" class="action-menu-item action-menu-item--history" id="btn-menu-redo" disabled role="menuitem">
+                      <span>Redo</span>
+                      <span class="action-menu-shortcut">Cmd+Shift+Z</span>
+                    </button>
+                    <span class="action-menu-divider" aria-hidden="true"></span>
                     <button type="button" class="action-menu-item" id="btn-dummy-abc" data-dummy-add-abc role="menuitem">Add dummy ABC</button>
                     <button type="button" class="action-menu-item" disabled role="menuitem">View (soon)</button>
                     <button type="button" class="action-menu-item" data-open-panel="tools" role="menuitem">Tools</button>
+                    <button type="button" class="action-menu-item" data-open-panel="vectorizer" role="menuitem">Trace Bitmap…</button>
                     <button type="button" class="action-menu-item action-menu-item--sub" data-open-panel="setup" role="menuitem">Setup</button>
                     <button type="button" class="action-menu-item" disabled role="menuitem">Help (soon)</button>
                   </div>
+                </div>
+                <div class="floating-history-group" role="group" aria-label="Undo and Redo">
+                  <button type="button" id="btn-undo" class="floating-action-btn is-disabled" disabled title="Undo (Cmd+Z)" aria-label="Undo">${icons.undo}</button>
+                  <button type="button" id="btn-redo" class="floating-action-btn is-disabled" disabled title="Redo (Cmd+Shift+Z)" aria-label="Redo">${icons.redo}</button>
+                </div>
+                <div class="floating-history-group" role="radiogroup" aria-label="Canvas tool mode">
+                  <button type="button" id="btn-tool-select" class="floating-action-btn active" title="Select Tool (V) — click or box select" aria-label="Select Tool" aria-pressed="true">${icons.select}</button>
+                  <button type="button" id="btn-tool-hand" class="floating-action-btn" title="Hand Tool (H) — click and drag to pan canvas" aria-label="Hand Tool" aria-pressed="false">${icons.hand}</button>
                 </div>
                 <button type="button" id="btn-canvas-menu" class="floating-menu-btn" hidden title="Canvas tools" aria-label="Canvas tools" aria-haspopup="toolbar" aria-expanded="false" aria-controls="canvas-subtoolbar">Canvas</button>
               </div>
               <div id="canvas-subtoolbar" class="canvas-subtoolbar" role="toolbar" aria-label="Canvas tools" hidden>
                 <div class="canvas-subtoolbar-row">
-                  <button type="button" id="btn-undo" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon canvas-subtoolbar-btn--undo is-disabled" disabled title="Undo" aria-label="Undo">${icons.undo}</button>
-                  <button type="button" id="btn-redo" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon canvas-subtoolbar-btn--redo is-disabled" disabled title="Redo" aria-label="Redo">${icons.redo}</button>
+                  <button type="button" id="btn-sub-undo" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon canvas-subtoolbar-btn--undo is-disabled" disabled title="Undo" aria-label="Undo">${icons.undo}</button>
+                  <button type="button" id="btn-sub-redo" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon canvas-subtoolbar-btn--redo is-disabled" disabled title="Redo" aria-label="Redo">${icons.redo}</button>
                   <button type="button" id="btn-nest-toggle" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon canvas-subtoolbar-btn--nest is-disabled" disabled title="Auto nest" aria-label="Auto nest" aria-expanded="false" aria-controls="nesting-popup">${icons.nest}</button>
                   <span class="canvas-subtoolbar-divider" aria-hidden="true"></span>
                   <button type="button" id="btn-file" class="canvas-subtoolbar-btn canvas-subtoolbar-btn--icon" title="File" aria-label="File">${icons.file}</button>
@@ -192,8 +213,11 @@ export class StudioShell {
 
           <div id="object-context-menu" class="object-context-menu" role="menu" aria-label="Object actions" hidden>
             <button type="button" class="object-context-menu-item" data-ctx-action="size" role="menuitem">Size</button>
+            <button type="button" class="object-context-menu-item" data-ctx-action="group" role="menuitem">Group</button>
+            <button type="button" class="object-context-menu-item" data-ctx-action="ungroup" role="menuitem">Ungroup</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="explode" role="menuitem">Explode group</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="duplicate" role="menuitem">Duplicate</button>
+
             <button type="button" class="object-context-menu-item" data-ctx-action="mirror-h" role="menuitem">Mirror horizontal</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="mirror-v" role="menuitem">Mirror vertical</button>
             <button type="button" class="object-context-menu-item" data-ctx-action="copy" role="menuitem">Copy</button>
@@ -204,7 +228,7 @@ export class StudioShell {
 
           <div class="canvas-overlay-bottom">
             <div class="nav-hints-badge">
-              <div class="hint-item"><span>Scroll/pinch: Zoom · Drag empty bed: Pan · 2 fingers: pan view</span></div>
+              <div class="hint-item"><span>Select (V) · Hand (H) · Scroll/pinch: Zoom · Space+drag: Pan · Drag bed: Area select</span></div>
               <span class="hint-divider">|</span>
               <div class="hint-item"><span>Cmd+C/V · Cmd+D duplicate · F6 cycle</span></div>
               <span class="hint-divider">|</span>
@@ -354,14 +378,29 @@ export class StudioShell {
       this.canvas?.resetView();
     });
 
-    this.root.querySelector('#btn-undo')?.addEventListener('click', () => {
-      this.closeNc7Menu();
+    const triggerUndo = (): void => {
+      this.closeToolbarMenus();
       void this.canvas?.undo();
-    });
+    };
 
-    this.root.querySelector('#btn-redo')?.addEventListener('click', () => {
-      this.closeNc7Menu();
+    const triggerRedo = (): void => {
+      this.closeToolbarMenus();
       void this.canvas?.redo();
+    };
+
+    this.root.querySelector('#btn-undo')?.addEventListener('click', triggerUndo);
+    this.root.querySelector('#btn-sub-undo')?.addEventListener('click', triggerUndo);
+    this.root.querySelector('#btn-menu-undo')?.addEventListener('click', triggerUndo);
+
+    this.root.querySelector('#btn-redo')?.addEventListener('click', triggerRedo);
+    this.root.querySelector('#btn-sub-redo')?.addEventListener('click', triggerRedo);
+    this.root.querySelector('#btn-menu-redo')?.addEventListener('click', triggerRedo);
+
+    this.root.querySelector('#btn-tool-select')?.addEventListener('click', () => {
+      this.setToolMode('select');
+    });
+    this.root.querySelector('#btn-tool-hand')?.addEventListener('click', () => {
+      this.setToolMode('hand');
     });
 
     this.root.querySelector('#btn-nest-toggle')?.addEventListener('click', (e) => {
@@ -421,6 +460,10 @@ export class StudioShell {
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        if (this.activeToolMode === 'hand') {
+          this.setToolMode('select');
+          return;
+        }
         if (this.objectContextMenuOpen) {
           this.closeObjectContextMenu();
           return;
@@ -452,7 +495,19 @@ export class StudioShell {
       }
 
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      if (!mod) {
+        if (e.key === 'h' || e.key === 'H') {
+          e.preventDefault();
+          this.setToolMode('hand');
+          return;
+        }
+        if (e.key === 'v' || e.key === 'V') {
+          e.preventDefault();
+          this.setToolMode('select');
+          return;
+        }
+        return;
+      }
 
       if (e.key === 'd' && labOptions.isEnabled('F-01') && labOptions.isEnabled('F-04')) {
         e.preventDefault();
@@ -472,11 +527,18 @@ export class StudioShell {
         return;
       }
 
+      if (e.key === 'g' && !e.shiftKey) {
+        e.preventDefault();
+        void this.canvas?.groupSelectedObjects();
+        return;
+      }
+
       if (e.key === 'g' && e.shiftKey) {
         e.preventDefault();
         void this.canvas?.explodeSelectedGroup();
         return;
       }
+
 
       if (e.key === 'z' && !e.shiftKey && labOptions.isEnabled('CORE-UNDO')) {
         e.preventDefault();
@@ -559,6 +621,22 @@ export class StudioShell {
     });
   }
 
+  private setToolMode(tool: 'select' | 'hand'): void {
+    this.activeToolMode = tool;
+    this.canvas?.setTool(tool);
+
+    const selectBtn = this.root.querySelector('#btn-tool-select');
+    const handBtn = this.root.querySelector('#btn-tool-hand');
+    if (selectBtn instanceof HTMLButtonElement) {
+      selectBtn.classList.toggle('active', tool === 'select');
+      selectBtn.setAttribute('aria-pressed', String(tool === 'select'));
+    }
+    if (handBtn instanceof HTMLButtonElement) {
+      handBtn.classList.toggle('active', tool === 'hand');
+      handBtn.setAttribute('aria-pressed', String(tool === 'hand'));
+    }
+  }
+
   private toggleNestingPanel(): void {
     this.nestingPanelOpen = !this.nestingPanelOpen;
     this.syncNestingPanelUi();
@@ -624,6 +702,12 @@ export class StudioShell {
           case 'properties':
             this.openObjectPropertiesPanel();
             break;
+          case 'group':
+            void this.canvas?.groupSelectedObjects();
+            break;
+          case 'ungroup':
+            void this.canvas?.ungroupSelectedGroup();
+            break;
           case 'explode':
             void this.canvas?.explodeSelectedGroup();
             break;
@@ -676,6 +760,8 @@ export class StudioShell {
 
     const duplicateOk = labOptions.isEnabled('F-01') && labOptions.isEnabled('F-04');
     const clipboardOk = labOptions.isEnabled('F-02') && labOptions.isEnabled('F-04');
+    const groupOk = kind === 'object' && !!this.canvas?.canGroupSelectedObjects();
+    const ungroupOk = kind === 'object' && !!this.canvas?.canUngroupSelectedGroup();
     const explodeOk = kind === 'object' && !!this.canvas?.canExplodeSelectedGroup();
 
     menu.querySelectorAll('[data-ctx-action]').forEach((el) => {
@@ -683,6 +769,10 @@ export class StudioShell {
       if (!(el instanceof HTMLElement)) return;
       if (kind === 'canvas') {
         el.hidden = action !== 'paste';
+      } else if (action === 'group') {
+        el.hidden = !groupOk;
+      } else if (action === 'ungroup') {
+        el.hidden = !ungroupOk;
       } else if (action === 'explode') {
         el.hidden = !explodeOk;
       } else {
@@ -693,7 +783,10 @@ export class StudioShell {
     menu.querySelector('[data-ctx-action="duplicate"]')?.toggleAttribute('disabled', !duplicateOk);
     menu.querySelector('[data-ctx-action="copy"]')?.toggleAttribute('disabled', !clipboardOk);
     menu.querySelector('[data-ctx-action="paste"]')?.toggleAttribute('disabled', !clipboardOk);
+    menu.querySelector('[data-ctx-action="group"]')?.toggleAttribute('disabled', !groupOk);
+    menu.querySelector('[data-ctx-action="ungroup"]')?.toggleAttribute('disabled', !ungroupOk);
     menu.querySelector('[data-ctx-action="explode"]')?.toggleAttribute('disabled', !explodeOk);
+
 
     menu.hidden = false;
     menu.style.visibility = 'hidden';
@@ -831,42 +924,248 @@ export class StudioShell {
     this.bindVectorizerPanel(host);
   }
 
-  private setVectorizerState(partial: Partial<VectorizerPanelState>): void {
+  private setVectorizerState(partial: Partial<VectorizerPanelState>, fullRerender = false): void {
+    const prevSrc = this.vectorizerState.previewImageSrc;
     this.vectorizerState = { ...this.vectorizerState, ...partial };
-    const resultEl = this.root.querySelector('#vectorizer-result');
+
+    if (fullRerender || prevSrc !== this.vectorizerState.previewImageSrc) {
+      if (this.openPanel === 'vectorizer') {
+        this.refreshVectorizerPanel();
+      }
+      return;
+    }
+
+    const host = this.root.querySelector('#vectorizer-panel-host');
+    if (!(host instanceof HTMLElement)) return;
+
+    const { message, status, previewSvgText, pathCount } = this.vectorizerState;
+
+    // Status pill
+    const pill = host.querySelector('.vectorizer-status-pill');
+    if (pill instanceof HTMLElement) {
+      pill.textContent =
+        status === 'processing'
+          ? 'Tracing…'
+          : status === 'done'
+            ? 'Vector Ready'
+            : status === 'error'
+              ? 'Trace Failed'
+              : 'Ready';
+      pill.className = `vectorizer-status-pill ${
+        status === 'processing'
+          ? 'is-processing'
+          : status === 'done'
+            ? 'is-done'
+            : status === 'error'
+              ? 'is-error'
+              : ''
+      }`;
+    }
+
+    // Result box
+    const resultEl = host.querySelector('#vectorizer-result');
     if (resultEl instanceof HTMLElement) {
-      const { message, status } = this.vectorizerState;
       resultEl.textContent =
         message ??
-        (status === 'processing' ? 'Tracing…' : 'Upload PNG or JPG to trace and import to canvas.');
-      resultEl.classList.remove('is-empty', 'is-processing', 'is-done', 'is-error');
-      if (status === 'processing') resultEl.classList.add('is-processing');
-      else if (status === 'done') resultEl.classList.add('is-done');
-      else if (status === 'error') resultEl.classList.add('is-error');
-      else if (!message) resultEl.classList.add('is-empty');
+        (status === 'processing'
+          ? 'Tracing image…'
+          : previewSvgText
+            ? 'Review preview and click Apply to Foam Bed.'
+            : 'Choose a PNG, JPG, or WebP to trace.');
+      resultEl.className = `vectorizer-result ${
+        status === 'processing'
+          ? 'is-processing'
+          : status === 'done'
+            ? 'is-done'
+            : status === 'error'
+              ? 'is-error'
+              : message
+                ? ''
+                : 'is-empty'
+      }`;
+    }
+
+    // Apply button
+    const applyBtn = host.querySelector('#btn-trace-apply');
+    if (applyBtn instanceof HTMLButtonElement) {
+      applyBtn.disabled = !previewSvgText || status === 'processing';
+    }
+
+    // Clear button
+    const clearBtn = host.querySelector('#btn-trace-clear');
+    if (clearBtn instanceof HTMLButtonElement) {
+      clearBtn.disabled = status === 'processing';
+    }
+
+    // After preview body
+    const vectorBody = host.querySelector('.preview-card-body--vector');
+    if (vectorBody instanceof HTMLElement) {
+      const spinnerHtml =
+        status === 'processing'
+          ? `<div class="preview-loading-overlay">
+              <div class="preview-spinner"></div>
+              <span class="preview-loading-text">Tracing contours with potrace WASM…</span>
+            </div>`
+          : '';
+
+      const contentHtml = previewSvgText
+        ? `<div class="preview-svg-container" id="preview-svg-mount">${previewSvgText}</div>`
+        : `<div class="preview-placeholder">
+            <span class="preview-placeholder-text">${
+              status === 'processing' ? 'Tracing contours…' : 'Traced vector will appear here'
+            }</span>
+          </div>`;
+
+      vectorBody.innerHTML = contentHtml + spinnerHtml;
+    }
+
+    // After badge (path count)
+    const afterHeader = host.querySelector('.preview-card--after .preview-card-header');
+    if (afterHeader instanceof HTMLElement) {
+      let badge = afterHeader.querySelector('.preview-card-badge');
+      if (pathCount != null && pathCount > 0) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'preview-card-badge preview-card-badge--success';
+          afterHeader.appendChild(badge);
+        }
+        badge.textContent = `${pathCount} path${pathCount === 1 ? '' : 's'}`;
+      } else if (badge) {
+        badge.remove();
+      }
     }
   }
 
-  private bindVectorizerPanel(scope: ParentNode): void {
-    const thresholdEl = scope.querySelector('#trace-threshold');
-    const thresholdValueEl = scope.querySelector('#trace-threshold-value');
-    const turdEl = scope.querySelector('#trace-turdsize');
+  private async executeTrace(): Promise<void> {
+    if (!this.stagedTraceFile) return;
 
-    thresholdEl?.addEventListener('input', (e) => {
-      const input = e.target as HTMLInputElement;
-      const n = parseInt(input.value, 10);
-      if (Number.isFinite(n)) {
-        vectorCore.setConfig({ threshold: n });
-        if (thresholdValueEl) thresholdValueEl.textContent = String(n);
+    if (!labOptions.isEnabled('V-01')) {
+      this.setVectorizerState({
+        status: 'error',
+        message: 'Bitmap tracing (V-01) is disabled in Dev Lab.',
+      });
+      return;
+    }
+
+    this.setVectorizerState({
+      status: 'processing',
+      message: 'Tracing contours…',
+    });
+
+    const result = await vectorCore.traceImage(this.stagedTraceFile, (msg) => {
+      this.setVectorizerState({ status: 'processing', message: msg });
+    });
+
+    if (result.job.status === 'error' || !result.svgText) {
+      this.setVectorizerState({
+        status: 'error',
+        message: result.summary,
+        previewSvgText: null,
+        pathCount: 0,
+      });
+    } else {
+      this.setVectorizerState({
+        status: 'done',
+        message: result.summary,
+        previewSvgText: result.svgText,
+        pathCount: result.pathCount ?? 0,
+      });
+    }
+  }
+
+  private scheduleTraceDebounced(): void {
+    if (!this.stagedTraceFile) return;
+    if (this.traceDebounceTimer != null) {
+      window.clearTimeout(this.traceDebounceTimer);
+    }
+    this.traceDebounceTimer = window.setTimeout(() => {
+      this.traceDebounceTimer = null;
+      void this.executeTrace();
+    }, 250);
+  }
+
+  private handleImageFileSelected(file: File): void {
+    if (!file.type.startsWith('image/')) {
+      this.setVectorizerState({
+        status: 'error',
+        message: 'Please choose an image file (PNG, JPG, or WebP).',
+      });
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        this.stagedTraceFile = file;
+        this.setVectorizerState(
+          {
+            previewImageSrc: dataUrl,
+            fileName: file.name,
+            imageDimensions: { width: img.naturalWidth, height: img.naturalHeight },
+            status: 'processing',
+            message: 'Loading image…',
+            previewSvgText: null,
+            pathCount: undefined,
+          },
+          true
+        );
+        void this.executeTrace();
+      };
+      img.onerror = () => {
+        this.setVectorizerState({
+          status: 'error',
+          message: 'Failed to decode image.',
+        });
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  private bindVectorizerPanel(scope: ParentNode): void {
+    const thresholdSlider = scope.querySelector('#trace-threshold') as HTMLInputElement | null;
+    const thresholdNum = scope.querySelector('#trace-threshold-number') as HTMLInputElement | null;
+    const turdEl = scope.querySelector('#trace-turdsize') as HTMLInputElement | null;
+    const turdValueEl = scope.querySelector('#trace-turdsize-value');
+    const invertEl = scope.querySelector('#trace-invert') as HTMLInputElement | null;
+
+    const syncThreshold = (val: number): void => {
+      if (!Number.isFinite(val)) return;
+      const clamped = Math.max(10, Math.min(240, val));
+      vectorCore.setConfig({ threshold: clamped });
+      if (thresholdSlider && thresholdSlider.value !== String(clamped)) {
+        thresholdSlider.value = String(clamped);
+      }
+      if (thresholdNum && thresholdNum.value !== String(clamped)) {
+        thresholdNum.value = String(clamped);
+      }
+      this.scheduleTraceDebounced();
+    };
+
+    thresholdSlider?.addEventListener('input', () => {
+      const n = parseInt(thresholdSlider.value, 10);
+      syncThreshold(n);
+    });
+
+    thresholdNum?.addEventListener('input', () => {
+      const n = parseInt(thresholdNum.value, 10);
+      syncThreshold(n);
+    });
+
+    turdEl?.addEventListener('input', () => {
+      const n = parseInt(turdEl.value, 10);
+      if (Number.isFinite(n) && n >= 0) {
+        vectorCore.setConfig({ turdSize: n });
+        if (turdValueEl) turdValueEl.textContent = `${n} px`;
+        this.scheduleTraceDebounced();
       }
     });
 
-    turdEl?.addEventListener('change', (e) => {
-      const input = e.target as HTMLInputElement;
-      const n = parseInt(input.value, 10);
-      if (Number.isFinite(n) && n >= 0) {
-        vectorCore.setConfig({ turdSize: n });
-      }
+    invertEl?.addEventListener('change', () => {
+      vectorCore.setConfig({ invert: Boolean(invertEl.checked) });
+      this.scheduleTraceDebounced();
     });
 
     scope.querySelector('#trace-image-upload')?.addEventListener('change', (e) => {
@@ -874,39 +1173,71 @@ export class StudioShell {
       const file = input.files?.[0];
       input.value = '';
       if (!file) return;
+      this.handleImageFileSelected(file);
+    });
 
-      if (!labOptions.isEnabled('V-01')) {
-        this.setVectorizerState({
-          status: 'error',
-          message: 'Bitmap tracing (V-01) is disabled in Dev Lab.',
-        });
-        return;
-      }
+    // Drag and drop onto upload zone
+    const dropZone = scope.querySelector('#trace-upload-zone');
+    if (dropZone instanceof HTMLElement) {
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('is-dragover');
+      });
+      dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('is-dragover');
+      });
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('is-dragover');
+        const file = e.dataTransfer?.files?.[0];
+        if (file) this.handleImageFileSelected(file);
+      });
+    }
 
+    // Apply button
+    scope.querySelector('#btn-trace-apply')?.addEventListener('click', () => {
       void (async () => {
-        this.setVectorizerState({ status: 'processing', message: 'Starting trace…' });
-        const result = await vectorCore.traceImage(file, (msg) => {
-          this.setVectorizerState({ status: 'processing', message: msg });
-        });
-
-        this.setVectorizerState({
-          status: result.job.status === 'error' ? 'error' : 'done',
-          message: result.summary,
-        });
-
-        if (result.svgText && this.canvas) {
-          const name = file.name.replace(/\.[^.]+$/, '') + '.svg';
-          try {
-            await this.canvas.importVectorizerSvg(result.svgText, name);
-          } catch (err) {
-            console.error('[StudioShell] bitmap trace import failed', err);
-            this.setVectorizerState({
-              status: 'error',
-              message: err instanceof Error ? err.message : 'Import failed',
-            });
-          }
+        if (!this.vectorizerState.previewSvgText || !this.canvas) return;
+        const rawName = this.vectorizerState.fileName || 'traced_image';
+        const name = rawName.replace(/\.[^.]+$/, '') + '.svg';
+        try {
+          this.setVectorizerState({ status: 'processing', message: 'Importing to foam bed…' });
+          await this.canvas.importVectorizerSvg(this.vectorizerState.previewSvgText, name);
+          this.closePanels();
+          this.setVectorizerState({ status: 'done', message: 'Imported to foam bed.' });
+        } catch (err) {
+          console.error('[StudioShell] bitmap trace apply failed', err);
+          this.setVectorizerState({
+            status: 'error',
+            message: err instanceof Error ? err.message : 'Import failed',
+          });
         }
       })();
+    });
+
+    // Clear button
+    scope.querySelector('#btn-trace-clear')?.addEventListener('click', () => {
+      this.stagedTraceFile = null;
+      if (this.traceDebounceTimer != null) {
+        window.clearTimeout(this.traceDebounceTimer);
+        this.traceDebounceTimer = null;
+      }
+      this.setVectorizerState(
+        {
+          previewImageSrc: null,
+          previewSvgText: null,
+          fileName: null,
+          imageDimensions: null,
+          pathCount: undefined,
+          status: 'idle',
+          message: null,
+        },
+        true
+      );
     });
   }
 
@@ -1051,23 +1382,25 @@ export class StudioShell {
     const nestFeatureOn = labOptions.isEnabled('CORE-NEST');
     const nestEnabled = objectCount >= 2 && nestFeatureOn;
 
-    const undoBtn = this.root.querySelector('#btn-undo');
-    if (undoBtn instanceof HTMLButtonElement) {
-      undoBtn.disabled = !undoEnabled;
-      undoBtn.classList.toggle('is-disabled', !undoEnabled);
-      const undoTitle = undoEnabled ? history.label : 'Nothing to undo';
-      undoBtn.title = undoTitle;
-      undoBtn.setAttribute('aria-label', undoTitle);
-    }
+    const undoTitle = undoEnabled ? history.label : 'Nothing to undo';
+    this.root
+      .querySelectorAll<HTMLButtonElement>('#btn-undo, #btn-sub-undo, #btn-menu-undo')
+      .forEach((btn) => {
+        btn.disabled = !undoEnabled;
+        btn.classList.toggle('is-disabled', !undoEnabled);
+        btn.title = undoTitle;
+        btn.setAttribute('aria-label', undoTitle);
+      });
 
-    const redoBtn = this.root.querySelector('#btn-redo');
-    if (redoBtn instanceof HTMLButtonElement) {
-      redoBtn.disabled = !redoEnabled;
-      redoBtn.classList.toggle('is-disabled', !redoEnabled);
-      const redoTitle = redoEnabled ? history.redoLabel : 'Nothing to redo';
-      redoBtn.title = redoTitle;
-      redoBtn.setAttribute('aria-label', redoTitle);
-    }
+    const redoTitle = redoEnabled ? history.redoLabel : 'Nothing to redo';
+    this.root
+      .querySelectorAll<HTMLButtonElement>('#btn-redo, #btn-sub-redo, #btn-menu-redo')
+      .forEach((btn) => {
+        btn.disabled = !redoEnabled;
+        btn.classList.toggle('is-disabled', !redoEnabled);
+        btn.title = redoTitle;
+        btn.setAttribute('aria-label', redoTitle);
+      });
 
     const nestToggle = this.root.querySelector('#btn-nest-toggle');
     if (nestToggle instanceof HTMLButtonElement) {

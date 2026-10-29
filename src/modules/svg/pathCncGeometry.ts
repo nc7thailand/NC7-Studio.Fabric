@@ -653,6 +653,16 @@ export function normalizeFabricObjectToCncFrame(obj: FabricObject): void {
     objectCaching: false,
   });
 
+  if (obj.group) {
+    if (obj instanceof Path) {
+      const cncType =
+        (obj.get('cncType') as CncVectorType | undefined) ??
+        classifyPathCncType(obj.path as PathCommand[], obj.sourcePath);
+      obj.set({ cncType });
+    }
+    return;
+  }
+
   if (obj instanceof Path) {
     const world = getPathWorldBounds(obj);
     const local = calcPathDataBounds(obj.path as PathCommand[]);
@@ -681,6 +691,71 @@ export function normalizeFabricObjectToCncFrame(obj: FabricObject): void {
   }
 
   obj.setCoords();
+}
+
+/** Check if a Fabric Path is a compound path with multiple subpath loops/chains. */
+export function canSplitCompoundPath(path: FabricObject | null | undefined): boolean {
+  if (!path || !(path instanceof Path)) return false;
+  const data = path.path as PathCommand[] | undefined;
+  if (!data || data.length < 2) return false;
+  const subpaths = splitPathSubpaths(data);
+  return subpaths.length > 1;
+}
+
+/**
+ * Split a compound Path into separate independent Path objects (one per chain loop).
+ * Coordinates are mapped into the world CNC frame so visually each chain stays identical.
+ */
+export function splitCompoundPath(path: Path): Path[] {
+  const data = path.path as PathCommand[] | undefined;
+  if (!data || data.length < 2) return [path];
+  const subpaths = splitPathSubpaths(data);
+  if (subpaths.length <= 1) return [path];
+
+  const results: Path[] = [];
+  for (const sub of subpaths) {
+    if (sub.length <= 1) continue;
+    const bedCmds: PathCommand[] = sub.map((cmd) => {
+      const op = String(cmd[0]);
+      if (op === 'M' || op === 'm' || op === 'L' || op === 'l') {
+        const pt = pathPointToBed(path, toNum(cmd[1]), toNum(cmd[2]));
+        return [op.toUpperCase(), pt.x, pt.y] as PathCommand;
+      }
+      if (op === 'C' || op === 'c') {
+        const p1 = pathPointToBed(path, toNum(cmd[1]), toNum(cmd[2]));
+        const p2 = pathPointToBed(path, toNum(cmd[3]), toNum(cmd[4]));
+        const p3 = pathPointToBed(path, toNum(cmd[5]), toNum(cmd[6]));
+        return ['C', p1.x, p1.y, p2.x, p2.y, p3.x, p3.y] as PathCommand;
+      }
+      if (op === 'Q' || op === 'q') {
+        const p1 = pathPointToBed(path, toNum(cmd[1]), toNum(cmd[2]));
+        const p2 = pathPointToBed(path, toNum(cmd[3]), toNum(cmd[4]));
+        return ['Q', p1.x, p1.y, p2.x, p2.y] as PathCommand;
+      }
+      if (op === 'Z' || op === 'z') {
+        return ['Z'] as PathCommand;
+      }
+      return [...cmd] as PathCommand;
+    });
+
+    const child = new Path(bedCmds, {
+      stroke: path.stroke,
+      strokeWidth: path.strokeWidth,
+      fill: 'transparent',
+      strokeUniform: true,
+      objectCaching: false,
+    });
+
+    const bounds = calcPathDataBounds(child.path as PathCommand[]);
+    if (bounds.width <= 0.01 && bounds.height <= 0.01) {
+      continue;
+    }
+
+    normalizeFabricObjectToCncFrame(child);
+    results.push(child);
+  }
+
+  return results.length > 0 ? results : [path];
 }
 
 /** Reviver for loadSVGFromString — classify loops and normalize geometry. */
